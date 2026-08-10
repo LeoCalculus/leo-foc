@@ -116,6 +116,7 @@ int main(void)
   // start for PWM 1 now:
   HAL_TIM_Base_Start_IT(&htim1);
   // start PWM for all three:
+  EnableFOCStepSignal = 1;
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
