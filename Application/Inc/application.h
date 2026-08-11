@@ -41,6 +41,9 @@ extern volatile uint8_t EnableFOCStepSignal; // this tells whether FOC_step is e
 extern volatile float Electric_Frequency; // wt'w, w = 2PI*f, here for f
 extern volatile float SPWM_Modulation;
 extern volatile uint16_t PhaseCurrent[3]; // UVW
+extern volatile uint32_t ADCOffsetCalib[3]; // this is in terms of ADC count
+extern volatile float ADCOffset[3];
+extern volatile uint8_t DisableFOC;
 
 void Init();
 void Application_Step(const float dt); // 1000Hz loop
