@@ -49,7 +49,10 @@ add_executable(${CMAKE_PROJECT_NAME}
         Application/Src/ws2812.c
         Application/Inc/ws2812.h
         Application/Src/utils.c
-        Application/Inc/utils.h)
+        Application/Inc/utils.h
+        Application/Src/mt6835.c
+        Application/Inc/mt6835.h
+        Application/Inc/mt6835.h)
 
 #file(GLOB application_sources Application/Src/*.c)
 #file(GLOB application_include Application/Inc/*.h)

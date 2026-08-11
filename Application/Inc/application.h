@@ -8,15 +8,19 @@
 // C lib includes
 #include <stdint.h>
 #include <math.h>
+#include <string.h>
 
 // STM32 includes
 #include <usart.h>
 #include <dma.h>
 #include <adc.h>
+#include "tim.h"
 
 // USER includes
 #include <ws2812.h>
 #include <utils.h>
+#include <mt6835.h>
+
 
 // USER defines
 #define PI 3.14159265f  // define PI a float here
@@ -36,6 +40,7 @@ extern volatile uint16_t DMAADCBusVoltage; // float in stm32 is 32 bit
 extern volatile uint8_t EnableFOCStepSignal; // this tells whether FOC_step is enabled
 extern volatile float Electric_Frequency; // wt'w, w = 2PI*f, here for f
 extern volatile float SPWM_Modulation;
+extern volatile uint16_t PhaseCurrent[3]; // UVW
 
 void Init();
 void Application_Step(const float dt); // 1000Hz loop

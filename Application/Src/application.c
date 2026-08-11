@@ -4,7 +4,6 @@
 
 #include "../Inc/application.h"
 
-#include "tim.h"
 
 VofaReport vofa;
 uint8_t DMABuffer[16];
@@ -12,6 +11,7 @@ volatile uint16_t DMAADCBusVoltage = 0;
 volatile uint8_t EnableFOCStepSignal = 0;
 volatile float Electric_Frequency = 5.0f;
 volatile float SPWM_Modulation = 0.05f; // initial use 0.05 modulation with 5Hz
+volatile uint16_t PhaseCurrent[3] = {0};
 
 // static data for this file only:
 static volatile uint64_t AccumulatedTime = 0;
@@ -26,11 +26,14 @@ void Init() {
     // set ws2812 bits:
     WS2812BINARY.BIT_0 = 96; // this is 110_0000 keep low 7 bits
     WS2812BINARY.BIT_1 = 120; // this is 111_1000 keep low 7 bits
+    // init for MT6835
+    MT6835_Init();
 }
 
 void Application_Step(const float dt) {
     // snapshot for using variables:
     uint32_t ADCBusVoltage = DMAADCBusVoltage;
+    float RotorAngle = 0.0f;
 
     // application of variables
     if (AccumulatedTime == 5000) {
@@ -47,13 +50,28 @@ void Application_Step(const float dt) {
 
     // linear mapping for testing:
     // fe(t) = 5+9t (t has unit seconds)
-    Electric_Frequency = clampf(5.0f + 9.0f * (float)AccumulatedTime/1000.0f, 50.0f, 5.0f);
-    SPWM_Modulation = clampf(0.05f + 0.014f * (float)AccumulatedTime/1000.0f, 0.12f, 0.05f);
+    // Electric_Frequency = clampf(5.0f + 9.0f * (float)AccumulatedTime/1000.0f, 50.0f, 5.0f);
+    // SPWM_Modulation = clampf(0.05f + 0.014f * (float)AccumulatedTime/1000.0f, 0.12f, 0.05f);
+    Electric_Frequency = 0.0f;
+    SPWM_Modulation = 0.0f;
 
     float BusVolatge = (float)ADCBusVoltage * (3.3f/4096.0f) / 1000.0f * 16000.0f;
     vofa.data[0] = BusVolatge;
     vofa.data[1] = Electric_Frequency;
     vofa.data[2] = SPWM_Modulation;
+
+    // the current sampling has a referece which is 1.65V
+    vofa.data[3] = ((float)PhaseCurrent[0] * (3.3f/4096.0f) - 1.6f) / 50.0f / 0.001f;
+    vofa.data[4] = ((float)PhaseCurrent[1] * (3.3f/4096.0f) - 1.6f) / 50.0f / 0.001f;
+    vofa.data[5] = ((float)PhaseCurrent[2] * (3.3f/4096.0f) - 1.6f) / 50.0f / 0.001f;
+
+    MT6835_Reading_t encoder;
+    if (MT6835_GetLatestReading(&encoder)) {
+        RotorAngle = encoder.angle_radians;
+    }
+
+    vofa.data[6] = RotorAngle;
+
 
     if (EnableFOCStepSignal) {
         WS2812_SETPURE(0,0,32);
@@ -99,4 +117,6 @@ void FOC_Step(const float dt) {
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Channel2Duty);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, Channel3Duty);
 
+    // read angle per 20KHz
+    (void)MT6835_StartAngleRead_DMA();
 }

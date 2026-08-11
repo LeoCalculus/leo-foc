@@ -110,8 +110,22 @@ int main(void)
   HAL_ADCEx_Calibration_Start(&hadc4, ADC_SINGLE_ENDED);
   // start ADC dma for bus voltage:
   HAL_ADC_Start_DMA(&hadc4, (uint32_t *)&DMAADCBusVoltage, 1); // there is only one data need transfer
-  // disable adc for bus voltage half/full interrupt interrupt:
+  // disable dma for bus voltage half/full interrupt interrupt:
   __HAL_DMA_DISABLE_IT(hadc4.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
+
+  // enable all three sampliing ADCs
+  HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+  HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
+  HAL_ADCEx_Calibration_Start(&hadc3, ADC_SINGLE_ENDED);
+  // disable not necessary DMA interrupts:
+  // enable all dma for adcs
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)&PhaseCurrent[0], 1); // U
+  __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
+  HAL_ADC_Start_DMA(&hadc2, (uint32_t *)&PhaseCurrent[1], 1); // V
+  __HAL_DMA_DISABLE_IT(hadc2.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
+  HAL_ADC_Start_DMA(&hadc3, (uint32_t *)&PhaseCurrent[2], 1); // W
+  __HAL_DMA_DISABLE_IT(hadc3.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
+
 
   // start for PWM 1 now:
   HAL_TIM_Base_Start_IT(&htim1);
