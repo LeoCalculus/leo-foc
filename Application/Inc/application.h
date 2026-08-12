@@ -44,6 +44,8 @@ extern volatile uint16_t PhaseCurrent[3]; // UVW
 extern volatile uint32_t ADCOffsetCalib[3]; // this is in terms of ADC count
 extern volatile float ADCOffset[3];
 extern volatile uint8_t DisableFOC;
+extern uint8_t UARTDMABuffer[64];
+extern uint8_t WS2812Color[3];
 
 void Init();
 void Application_Step(const float dt); // 1000Hz loop

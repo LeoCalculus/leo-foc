@@ -4,6 +4,8 @@
 
 #include "../Inc/application.h"
 
+#include "command.h"
+
 
 VofaReport vofa;
 uint8_t DMABuffer[16];
@@ -15,8 +17,9 @@ volatile uint16_t PhaseCurrent[3] = {0};
 volatile uint32_t ADCOffsetCalib[3] = {0};
 volatile float ADCOffset[3] = {0.0f};
 volatile uint8_t DisableFOC = 0;
+uint8_t UARTDMABuffer[64] = {0};
+uint8_t WS2812Color[3] = {32, 0, 0};
 
-// static data for this file only:
 static volatile uint64_t AccumulatedTime = 0;
 static volatile float AccumulatedTimeFoc = 0.0f; // this counter used for FOC step
 static volatile uint8_t UpCountingFlag = 1;
@@ -31,6 +34,10 @@ void Init() {
     WS2812BINARY.BIT_1 = 120; // this is 111_1000 keep low 7 bits
     // init for MT6835
     MT6835_Init();
+    // connect dma receive:
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart4, UARTDMABuffer, sizeof(UARTDMABuffer)-1);
+    // disable UART half / full transmit
+    __HAL_DMA_DISABLE_IT(huart4.hdmarx, DMA_IT_HT);
 }
 
 void Application_Step(const float dt) {
@@ -75,10 +82,11 @@ void Application_Step(const float dt) {
 
     vofa.data[6] = RotorAngle;
 
-
-    if (EnableFOCStepSignal) {
-        WS2812_SETPURE(0,0,32);
+    // update ws2812
+    if (WS2812Update) {
+        WS2812_SETPURE(WS2812Color[0], WS2812Color[1], WS2812Color[2]);
         WS2812_REFRESH();
+        WS2812Update = 0; // only update once
     }
 
     // vofa send message to host PC

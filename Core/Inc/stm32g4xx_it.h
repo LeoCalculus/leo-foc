@@ -67,6 +67,7 @@ void TIM1_UP_TIM16_IRQHandler(void);
 void ADC3_IRQHandler(void);
 void UART4_IRQHandler(void);
 void TIM6_DAC_IRQHandler(void);
+void DMA2_Channel1_IRQHandler(void);
 void ADC4_IRQHandler(void);
 void DMA1_Channel8_IRQHandler(void);
 /* USER CODE BEGIN EFP */

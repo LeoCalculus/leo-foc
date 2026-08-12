@@ -52,7 +52,8 @@ add_executable(${CMAKE_PROJECT_NAME}
         Application/Inc/utils.h
         Application/Src/mt6835.c
         Application/Inc/mt6835.h
-        Application/Inc/mt6835.h)
+        Application/Src/command.c
+        Application/Inc/command.h)
 
 #file(GLOB application_sources Application/Src/*.c)
 #file(GLOB application_include Application/Inc/*.h)
