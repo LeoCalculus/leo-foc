@@ -26,6 +26,9 @@
 #define PI 3.14159265358979323846f
 #define TWO_PI 6.28318530717958647692f
 #define SPWM_ANGULAR_VELOCITY_PREFIX (2.0f*PI) // 2*PI*f = w
+#define halfDuty (4250.0f*0.5f)
+#define ADCParameter ((3.3f/4096.0f) / 50.0f / 0.001f)
+#define CurrentDropRate 1.0f
 
 // structs
 typedef struct VofaReport {
@@ -56,10 +59,23 @@ extern uint8_t UARTDMABuffer[64];
 extern uint8_t WS2812Color[3];
 extern volatile uint8_t CurrentState;
 extern volatile uint8_t NextState;
+extern float ClarkCurrent[2]; // Ia and Ib
+extern float ClarkV[2];
+extern float ParkCurrent[2]; // Id and Iq
+extern float UVWCurrent[3];
+extern float UVWVOut[3];
+extern volatile float Theta_e;
+
+// foc core parameters:
+extern volatile float Target_Id;
+extern volatile float Target_Iq;
+
 
 void Init();
 void Application_Step(const float dt); // 1000Hz loop
 void FOC_Step(const float dt); // 20kHz loop
+void RequestMotorSoftStop();
+void EmergencyStopMotor();
 
 
 

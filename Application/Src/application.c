@@ -14,7 +14,7 @@ volatile uint16_t DMAADCBusVoltage = 0;
 volatile uint8_t EnableFOCStepSignal = 0;
 volatile float Electric_Frequency = 5.0f;
 volatile float SPWM_Modulation = 0.05f; // initial use 0.05 modulation with 5Hz
-volatile uint16_t PhaseCurrent[3] = {0};
+volatile uint16_t PhaseCurrent[3] = {0}; // order is VWU
 volatile uint32_t ADCOffsetCalib[3] = {0};
 volatile float ADCOffset[3] = {0.0f};
 volatile uint8_t DisableFOC = 0;
@@ -22,10 +22,22 @@ uint8_t UARTDMABuffer[64] = {0};
 uint8_t WS2812Color[3] = {32, 0, 0};
 volatile uint8_t CurrentState = EnterState; // state definition
 volatile uint8_t NextState = CalibrateADC;
+float ClarkCurrent[2] = {0.0f}; // Ia and Ib
+float ClarkV[2] = {0.0f};
+float ParkCurrent[2] = {0.0f}; // Id and Iq
+float UVWCurrent[3] = {0.0f}; // order is UVW
+float UVWVOut[3] = {0.0f};
+volatile float Theta_e = 0.0f;
 
-static volatile uint64_t AccumulatedTime = 0;
+// foc core parameters:
+volatile float Target_Id = 0.0f;
+volatile float Target_Iq = 0.0f;
+
+// safety parameters:
+static volatile uint8_t SoftStopRequested = 0;
+static volatile uint8_t EmergencyStopLatched = 0;
+
 static volatile float AccumulatedTimeFoc = 0.0f; // this counter used for FOC step
-static volatile uint8_t UpCountingFlag = 1;
 static volatile uint8_t CalibrateADCFlag = 0; // flag used in current loop
 static volatile uint16_t CalibrationCounts = 4096; // sample this many of times
 static volatile uint8_t CalibrationElectricAngleSignal = 0;
@@ -41,6 +53,40 @@ static volatile uint32_t DirectionNegativeCounter = 0;
 static volatile float AccTimeFocDirectionCalib = 0.0f;
 static volatile float EncoderDirection = 0;
 
+PID_t Id_pid = {
+    .P = 0.1f,
+    .I = 300.0f,
+    .D = 0.0f,
+    .integral_max = 0.0025f
+};
+
+PID_t Iq_pid = {
+    .P = 0.6f,
+    .I = 300.0f,
+    .D = 0.0f,
+    .integral_max = 0.018f
+};
+
+void RequestMotorSoftStop() {
+    if (!EmergencyStopLatched) {
+        SoftStopRequested = 1;
+    }
+}
+
+void EmergencyStopMotor() {
+    // Disable everything and reset everything
+    __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(&htim1);
+    DisableFOC = 1;
+    EmergencyStopLatched = 1;
+    SoftStopRequested = 0;
+    Target_Id = 0.0f;
+    Target_Iq = 0.0f;
+
+    Id_pid.integral = 0.0f;
+    Id_pid.err_m1 = 0.0f;
+    Iq_pid.integral = 0.0f;
+    Iq_pid.err_m1 = 0.0f;
+}
 
 void Init() {
     // vofa just float
@@ -105,7 +151,7 @@ void Init() {
         FindEncoderDirectionFlag = 0;
     }
 
-
+    Target_Iq = 0.4f;
     // Blue WS2812 means the FOC is running:
     WS2812_SETPURE(0, 0, 32);
     WS2812_REFRESH();
@@ -115,52 +161,60 @@ void Init() {
 }
 
 void Application_Step(const float dt) {
-    // snapshot for using variables:
-    uint32_t ADCBusVoltage = DMAADCBusVoltage;
+    // need filter for display, otherwise the wave in vofa is useless
+    static float FilteredId = 0.0f;
+    static float FilteredIq = 0.0f;
+    const float DisplayFilterAlpha = 0.05f;
     float RotorAngle = 0.0f;
 
-    // application of variables
-    if (AccumulatedTime == 5000) {
-        UpCountingFlag = 0;
-    } else if (AccumulatedTime == 0){
-        UpCountingFlag = 1;
+    // reduce the target gradually instead of sudden stop
+    if (SoftStopRequested && !EmergencyStopLatched) {
+        const float CurrentStep = CurrentDropRate * dt;
+
+        if (Target_Id > CurrentStep) {
+            Target_Id -= CurrentStep;
+        } else if (Target_Id < -CurrentStep) {
+            Target_Id += CurrentStep;
+        } else { // match force 0
+            Target_Id = 0.0f;
+        }
+
+        if (Target_Iq > CurrentStep) {
+            Target_Iq -= CurrentStep;
+        } else if (Target_Iq < -CurrentStep) {
+            Target_Iq += CurrentStep;
+        } else {
+            Target_Iq = 0.0f;
+        }
+
+        // finally stop the motor entirely
+        if (Target_Id == 0.0f && Target_Iq == 0.0f) {
+            EmergencyStopMotor();
+        }
     }
 
-    if (UpCountingFlag) {
-        AccumulatedTime++;
-    }else {
-        AccumulatedTime--;
-    }
-
-    // linear mapping for testing:
-    // fe(t) = 5+9t (t has unit seconds)
-    // Electric_Frequency = clampf(5.0f + 9.0f * (float)AccumulatedTime/1000.0f, 50.0f, 5.0f);
-    // SPWM_Modulation = clampf(0.05f + 0.014f * (float)AccumulatedTime/1000.0f, 0.12f, 0.05f);
-    Electric_Frequency = 2.0f;
-    SPWM_Modulation = 0.06f;
-
-    float BusVolatge = (float)ADCBusVoltage * (3.3f/4096.0f) / 1000.0f * 16000.0f;
-    vofa.data[0] = BusVolatge;
-    vofa.data[1] = Electric_Frequency;
-    vofa.data[2] = SPWM_Modulation;
-
-    // the current sampling has a referece which is 1.65V
-    vofa.data[3] = ((float)PhaseCurrent[0]-ADCOffset[0]) * (3.3f/4096.0f) / 50.0f / 0.001f;
-    vofa.data[4] = ((float)PhaseCurrent[1]-ADCOffset[1]) * (3.3f/4096.0f) / 50.0f / 0.001f;
-    vofa.data[5] = ((float)PhaseCurrent[2]-ADCOffset[2]) * (3.3f/4096.0f) / 50.0f / 0.001f;
-
+    vofa.data[0] = EncoderDirection;
     MT6835_Reading_t encoder;
     if (MT6835_GetLatestReading(&encoder)) {
         RotorAngle = encoder.angle_radians;
     }
 
-    vofa.data[6] = RotorAngle;
-
-    // assume encoder is +
+    vofa.data[1] = RotorAngle;
     float ElectricAngle = wrap2pif( EncoderDirection * (7.0f * (RotorAngle - ElectricalMechanicalOffset)));
-    vofa.data[7] = ElectricAngle; // from graph we should expect its 7 times faster than Rotor
-    vofa.data[8] = ElectricalMechanicalOffset;
-    vofa.data[9] = EncoderDirection;
+    vofa.data[2] = ElectricAngle;
+
+    vofa.data[3] = ((float)PhaseCurrent[0]-ADCOffset[0]) * (3.3f/4096.0f) / 50.0f / 0.001f;
+    vofa.data[4] = ((float)PhaseCurrent[1]-ADCOffset[1]) * (3.3f/4096.0f) / 50.0f / 0.001f;
+    vofa.data[5] = ((float)PhaseCurrent[2]-ADCOffset[2]) * (3.3f/4096.0f) / 50.0f / 0.001f;
+
+    // simple IIR low pass filter for display
+    FilteredId += DisplayFilterAlpha * (ParkCurrent[0] - FilteredId);
+    FilteredIq += DisplayFilterAlpha * (ParkCurrent[1] - FilteredIq);
+
+    vofa.data[6] = Target_Id;
+    vofa.data[7] = FilteredId;
+    vofa.data[8] = Target_Iq;
+    vofa.data[9] = FilteredIq;
 
     // update ws2812
     if (WS2812Update) {
@@ -178,8 +232,11 @@ void FOC_Step(const float dt) {
     SnapPhaseCurrent[0] = PhaseCurrent[0];
     SnapPhaseCurrent[1] = PhaseCurrent[1];
     SnapPhaseCurrent[2] = PhaseCurrent[2];
+    uint32_t BusVoltageCount = 0;
+    BusVoltageCount = DMAADCBusVoltage;
 
     if (!DisableFOC) {
+        static float RotorAngle = 0.0f;
         // update dt at 20kHz still need angular velocity
         AccumulatedTimeFoc += SPWM_ANGULAR_VELOCITY_PREFIX * Electric_Frequency * dt; // 2PI * f * t
         // check if need wrap round:
@@ -187,32 +244,65 @@ void FOC_Step(const float dt) {
             AccumulatedTimeFoc -= 2.0f*PI;
         }
 
-        float halfDuty = 4250.0f*0.5f; // sine starting position should be here
+        float BusVoltage = (float)BusVoltageCount * (3.3f/4096.0f) / 1000.0f * 16000.0f;
+        if (BusVoltage < 21.0f || BusVoltage > 26.0f) { // stop immediately
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+            return;
+        }
+        // find exactly UVW current: Bro what the fuck they are negative
+        // Channel 1 is U, sampling adc is ADC3
+        // Channel 2 is V, sampling adc is ADC1
+        // Channel 3 is W, sampling adc is ADC2
+        UVWCurrent[1] = -((float)SnapPhaseCurrent[0]-ADCOffset[0]) * ADCParameter;
+        UVWCurrent[2] = -((float)SnapPhaseCurrent[1]-ADCOffset[1]) * ADCParameter;
+        UVWCurrent[0] = -((float)SnapPhaseCurrent[2]-ADCOffset[2]) * ADCParameter;
 
-        // according to the time, find the angle offset for pwm:
-        // define channel 1 has phase 0, channel 2 has phase 120 deg and channel 3 has phase -120 deg
-        // initial phases
-        float ThetaChannel1 = 0.0f; // 0
-        float ThetaChannel2 = 2.0f * PI / 3.0f; //  120
-        float ThetaChannel3 = -2.0f * PI / 3.0f; // -120
+        // clark transform
+        ClarkTransform();
 
-        // forminig current phase wt-theta
-        float PhaseChannel1 = AccumulatedTimeFoc - ThetaChannel1;
-        float PhaseChannel2 = AccumulatedTimeFoc - ThetaChannel2;
-        float PhaseChannel3 = AccumulatedTimeFoc - ThetaChannel3;
+        // get theta_e
+        MT6835_Reading_t encoder;
+        if (MT6835_GetLatestReading(&encoder)) {
+            RotorAngle = encoder.angle_radians;
+        }
 
-        // after find phase, find corresponding duty
-        // for any point on sine wave of generated pwm, point = DC bus * pwm duty, sin(phase) => duty
-        // duty from 0 to 4250, 2125 is half duty, need to convert to MCU duty
-        // now becomes a sine with amplitude 0 to 4250
-        float Channel1Duty  = halfDuty*(1+SPWM_Modulation * sinf(PhaseChannel1));
-        float Channel2Duty  = halfDuty*(1+SPWM_Modulation * sinf(PhaseChannel2));
-        float Channel3Duty  = halfDuty*(1+SPWM_Modulation * sinf(PhaseChannel3));
+        Theta_e = wrap2pif( EncoderDirection * (7.0f * (RotorAngle - ElectricalMechanicalOffset)));
+
+        // do park transform:
+        ParkTransform();
+
+        // do PID to get output voltage:
+        float Error_Id = Target_Id - ParkCurrent[0];
+        float Error_Iq = Target_Iq - ParkCurrent[1];
+
+        float VOutById = pid_cycle(&Id_pid, Error_Id, dt);
+        float VOutByIq = pid_cycle(&Iq_pid, Error_Iq, dt);
+
+        // do reverse Park
+        ReverseParkTransform(VOutById, VOutByIq);
+
+        // do reverse Clark to get voltage information
+        ReverseClarkTransform();
+
+        // after getting voltage, remap back to Duty:
+
+        // Simplified, assume using exactly 24V -> power supply case
+        float Channel1Duty  = (BusVoltage/2.0f + UVWVOut[0]) / BusVoltage * 4250.0f;
+        float Channel2Duty  = (BusVoltage/2.0f + UVWVOut[1]) / BusVoltage * 4250.0f;
+        float Channel3Duty  = (BusVoltage/2.0f + UVWVOut[2]) / BusVoltage * 4250.0f;
+
+        // find max and min for SVPWM:
+        float MaxDuty = (Channel1Duty > Channel2Duty) ? ((Channel1Duty > Channel3Duty) ? Channel1Duty : Channel3Duty) : ((Channel2Duty > Channel3Duty) ? Channel2Duty : Channel3Duty);
+        float MinDuty = (Channel1Duty < Channel2Duty) ? ((Channel1Duty < Channel3Duty) ? Channel1Duty : Channel3Duty) : ((Channel2Duty < Channel3Duty) ? Channel2Duty : Channel3Duty);
+        float MidDuty = (MaxDuty + MinDuty)/2.0f;
+        float Voffset = halfDuty - MidDuty;
 
         // N channel duty was complement setting so no need to set N channel again
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, Channel1Duty);
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Channel2Duty);
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, Channel3Duty);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, clampf(Channel1Duty+Voffset, 4250, 0));
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, clampf(Channel2Duty+Voffset, 4250, 0));
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, clampf(Channel3Duty+Voffset, 4250, 0));
 
     }
 

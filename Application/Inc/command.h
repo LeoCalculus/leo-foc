@@ -15,8 +15,9 @@ extern volatile uint8_t WS2812Update;
 
 /*
  * Command List
- * ws2812,r,g,b  -> this set the rgb of ws2812
- *
+ * WS2812,r,g,b  -> set the RGB value of WS2812
+ * STOP          -> ramp Id/Iq targets to zero, then disable PWM outputs
+ * ESTOP         -> immediately disable PWM outputs (reset required to restart)
  */
 
 // uart dma callback

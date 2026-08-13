@@ -58,6 +58,8 @@ void ParsingCommand(uint8_t* cmd) {
         // take a snapshot:
         uint8_t Command[64];
         memcpy(Command, cmd, sizeof(Command));
+        // Remove the line ending so zero-parameter commands compare exactly.
+        Command[strcspn((char*)Command, "\r\n")] = '\0';
 
         // ready to receive the next command
         CommandReady = 0;
@@ -69,7 +71,24 @@ void ParsingCommand(uint8_t* cmd) {
         if (command == NULL) {
             return;
         }
-        // command processing
+        // emergent stop motor and everything else
+        if (strcmp(command, "ESTOP") == 0) {
+            if (NumberOfParameters(saveptr) != 0) {
+                return;
+            }
+            EmergencyStopMotor();
+            return;
+        }
+
+        // stop motor smoothly
+        if (strcmp(command, "STOP") == 0) {
+            if (NumberOfParameters(saveptr) != 0) {
+                return;
+            }
+            RequestMotorSoftStop();
+            return;
+        }
+
         if (strcmp(command, "WS2812") == 0) {
             if (WS2812Update) { // if last update haven't finished yet
                 return;

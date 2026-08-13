@@ -121,11 +121,11 @@ int main(void)
   HAL_ADCEx_Calibration_Start(&hadc3, ADC_SINGLE_ENDED);
   // disable not necessary DMA interrupts:
   // enable all dma for adcs
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)&PhaseCurrent[0], 1); // U
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)&PhaseCurrent[0], 1); // V
   __HAL_DMA_DISABLE_IT(hadc1.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
-  HAL_ADC_Start_DMA(&hadc2, (uint32_t *)&PhaseCurrent[1], 1); // V
+  HAL_ADC_Start_DMA(&hadc2, (uint32_t *)&PhaseCurrent[1], 1); // W
   __HAL_DMA_DISABLE_IT(hadc2.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
-  HAL_ADC_Start_DMA(&hadc3, (uint32_t *)&PhaseCurrent[2], 1); // W
+  HAL_ADC_Start_DMA(&hadc3, (uint32_t *)&PhaseCurrent[2], 1); // U
   __HAL_DMA_DISABLE_IT(hadc3.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
 
   DisableFOC = 1; // don't do anything about applying current during setting stage
