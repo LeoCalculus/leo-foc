@@ -106,8 +106,8 @@ int main(void)
   MX_TIM6_Init();
   MX_ADC4_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_Base_Start_IT(&htim6);
-  Init();
+
+  /* ADC settings */
   // calib ADC first:
   HAL_ADCEx_Calibration_Start(&hadc4, ADC_SINGLE_ENDED);
   // start ADC dma for bus voltage:
@@ -128,29 +128,8 @@ int main(void)
   HAL_ADC_Start_DMA(&hadc3, (uint32_t *)&PhaseCurrent[2], 1); // W
   __HAL_DMA_DISABLE_IT(hadc3.DMA_Handle, DMA_IT_TC | DMA_IT_HT);
 
-  DisableFOC = 1;
-  // Version 1 PCB forgot to use voltage reference chip, before entering calib with 0 pwm output first
-  WS2812_SETPURE(32, 0, 0);
-  WS2812_REFRESH(); // HINT start calib by samplyiny 4096 times
+  DisableFOC = 1; // don't do anything about applying current during setting stage
 
-  HAL_Delay(1000);
-
-  for (int i = 0; i < 4096; i++) {
-    ADCOffsetCalib[0] += PhaseCurrent[0];
-    ADCOffsetCalib[1] += PhaseCurrent[1];
-    ADCOffsetCalib[2] += PhaseCurrent[2];
-  }
-
-  ADCOffset[0] = (float)ADCOffsetCalib[0]/4096.0f;
-  ADCOffset[1] = (float)ADCOffsetCalib[1]/4096.0f;
-  ADCOffset[2] = (float)ADCOffsetCalib[2]/4096.0f;
-
-  WS2812_SETPURE(0, 32, 0);
-  WS2812_REFRESH(); // calib finished
-
-  HAL_Delay(1000);
-
-  DisableFOC = 0;
   // start for PWM 1 now:
   HAL_TIM_Base_Start_IT(&htim1);
   // start PWM for all three:
@@ -161,6 +140,9 @@ int main(void)
   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
+
+  Init();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */

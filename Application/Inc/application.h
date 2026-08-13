@@ -32,6 +32,13 @@ typedef struct VofaReport {
     uint8_t tail[4];
 } VofaReport;
 
+typedef enum StartUpFSM {
+    EnterState,
+    CalibrateADC, // no voltage reference for INA181A2 so this is required
+    FindElectricAngle, // calibrate the electric angle with mechanical angle by encoder
+    FindEncoderDirection, // formula for theta_e = Direction * (pole * theta_m - theta_offset)
+    ErrorState // if anything failed go to this state
+} Initializing;
 
 // create link for global usage:
 extern VofaReport vofa;
@@ -46,6 +53,8 @@ extern volatile float ADCOffset[3];
 extern volatile uint8_t DisableFOC;
 extern uint8_t UARTDMABuffer[64];
 extern uint8_t WS2812Color[3];
+extern volatile uint8_t CurrentState;
+extern volatile uint8_t NextState;
 
 void Init();
 void Application_Step(const float dt); // 1000Hz loop
