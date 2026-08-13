@@ -13,3 +13,18 @@ float clampf(float number_to_clamp, float upper_limit, float lower_limit) {
     }
     return output_numebr;
 }
+
+float wrap2pif(float target) {
+
+    target = fmodf(target, TWO_PI);
+
+    if (target < 0.0f) {
+        target += TWO_PI;
+    }
+
+    if (target >= TWO_PI) {
+        target -= TWO_PI;
+    }
+
+    return target;
+}

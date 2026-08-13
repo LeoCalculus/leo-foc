@@ -23,7 +23,8 @@
 
 
 // USER defines
-#define PI 3.14159265f  // define PI a float here
+#define PI 3.14159265358979323846f
+#define TWO_PI 6.28318530717958647692f
 #define SPWM_ANGULAR_VELOCITY_PREFIX (2.0f*PI) // 2*PI*f = w
 
 // structs
