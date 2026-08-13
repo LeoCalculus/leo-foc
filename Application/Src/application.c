@@ -35,6 +35,11 @@ static volatile uint8_t FindEncoderDirectionFlag = 0; // flag in current loop
 static volatile float ElectricalMechanicalOffset = 0.0f; // offset of encoder
 static volatile float AngleSinSum = 0.0f;
 static volatile float AngleCosSum = 0.0f;
+static volatile float EncoderLastReading = 0.0f;
+static volatile uint32_t DirectionPositiveCounter = 0;
+static volatile uint32_t DirectionNegativeCounter = 0;
+static volatile float AccTimeFocDirectionCalib = 0.0f;
+static volatile float EncoderDirection = 0;
 
 
 void Init() {
@@ -68,7 +73,7 @@ void Init() {
 
     if (CurrentState == CalibrateADC && NextState == FindElectricAngle) {
         CurrentState = FindElectricAngle;
-        // next state TODO
+        NextState = FindEncoderDirection;
         FindElectricAngleFlag = 1; // flag turned off below
         // USE LED to hint
         WS2812_SETPURE(32, 32, 0); // yellow for finding angle offset
@@ -83,6 +88,23 @@ void Init() {
         }
         FindElectricAngleFlag = 0; // disable the flag
     }
+
+    // lastly find the encoder increment information:
+    if (CurrentState == FindElectricAngle && NextState == FindEncoderDirection) {
+        CurrentState = FindEncoderDirection;
+        FindEncoderDirectionFlag = 1;
+        // apply positive direction magnetic field:
+        WS2812_SETPURE(25, 16, 0); // yellow for finding angle offset
+        WS2812_REFRESH();
+        HAL_Delay(2000); // delay just show led, actual run should within this time
+        if (DirectionPositiveCounter > DirectionNegativeCounter) { // they will not equal unless motor not moving
+            EncoderDirection = 1.0f;
+        } else if (DirectionPositiveCounter < DirectionNegativeCounter) {
+            EncoderDirection = -1.0f;
+        } // if equal just keep 0.0f
+        FindEncoderDirectionFlag = 0;
+    }
+
 
     // Blue WS2812 means the FOC is running:
     WS2812_SETPURE(0, 0, 32);
@@ -135,9 +157,10 @@ void Application_Step(const float dt) {
     vofa.data[6] = RotorAngle;
 
     // assume encoder is +
-    float ElectricAngle = wrap2pif( 1.0f * (7.0f * (RotorAngle - ElectricalMechanicalOffset)));
+    float ElectricAngle = wrap2pif( EncoderDirection * (7.0f * (RotorAngle - ElectricalMechanicalOffset)));
     vofa.data[7] = ElectricAngle; // from graph we should expect its 7 times faster than Rotor
     vofa.data[8] = ElectricalMechanicalOffset;
+    vofa.data[9] = EncoderDirection;
 
     // update ws2812
     if (WS2812Update) {
@@ -244,6 +267,44 @@ void FOC_Step(const float dt) {
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, CalibChannel2Duty);
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, CalibChannel3Duty);
 
+    }
+
+    // find encoder direction need by loop
+    if (FindEncoderDirectionFlag) {
+        // check encoder with positive direction rotate magnetic field:
+        float CurrentMechanicalReading = 0.0f;
+        MT6835_Reading_t encoder;
+        if (MT6835_GetLatestReading(&encoder)) {
+            CurrentMechanicalReading = encoder.angle_radians;
+        }
+        if (CurrentMechanicalReading > EncoderLastReading) {
+            DirectionPositiveCounter++;
+        } else if (CurrentMechanicalReading < EncoderLastReading){
+            DirectionNegativeCounter++;
+        }
+
+        // Apply positive rotate magnetic field:
+        AccTimeFocDirectionCalib += TWO_PI * 5.0f * dt; // checking at 5Hz
+
+        if (AccTimeFocDirectionCalib > 2.0f*PI) {
+            AccTimeFocDirectionCalib -= 2.0f*PI;
+        }
+
+        float halfDutyCalib = 4250.0f*0.5f;
+
+        float PhaseChannel1Calib = AccTimeFocDirectionCalib - 0.0f;
+        float PhaseChannel2Calib = AccTimeFocDirectionCalib - 2.0f * PI / 3.0f;
+        float PhaseChannel3Calib = AccTimeFocDirectionCalib - (-2.0f * PI / 3.0f);
+
+        float Channel1DutyCalib  = halfDutyCalib*(1+0.05f* sinf(PhaseChannel1Calib));
+        float Channel2DutyCalib  = halfDutyCalib*(1+0.05f * sinf(PhaseChannel2Calib));
+        float Channel3DutyCalib  = halfDutyCalib*(1+0.05f * sinf(PhaseChannel3Calib));
+
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, Channel1DutyCalib);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Channel2DutyCalib);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, Channel3DutyCalib);
+
+        EncoderLastReading = CurrentMechanicalReading;
     }
 
     (void)MT6835_StartAngleRead_DMA(); // need encoder reading at any time
