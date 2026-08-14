@@ -69,35 +69,12 @@ PID_t Id_pid = {
     .integral_max = 0.033f
 };
 
-// forward p:
-/*
-PID_t Id_pid = {
-    .P = 0.37f,
-    .I = 100.0f,
-    .D = 0.0f,
-    .integral_max = 0.034f
-};
- */
-
-// d-axis current is oscillating -> decrease P, increase I
-// d-axis mainly above 0 -> need I
-
 PID_t Iq_pid = {
     .P = 0.52f,
     .I = 100.0f,
     .D = 0.0f,
     .integral_max = 0.069f
 };
-
-// forward q:
-/*
-PID_t Iq_pid = {
-    .P = 0.52f,
-    .I = 100.0f,
-    .D = 0.0f,
-    .integral_max = 0.072f
-};
- */
 
 // recall meaning Error = Kp * e + Ki * integral (usually max as time goes on)
 
