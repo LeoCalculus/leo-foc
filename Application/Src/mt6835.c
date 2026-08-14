@@ -12,8 +12,12 @@
 #define MT6835_SPI_IDLE_TIMEOUT        1000U
 #define MT6835_CS_DELAY_ITERATIONS     32U
 #define MT6835_TWO_PI                  6.28318530717958647692f
+#define MT6835_RPM_PER_RADIAN_SECOND   9.54929658551372014613f
+#define MT6835_MAX_VELOCITY_GAP_MS     100U
 
 volatile MT6835_Reading_t MT6835_Reading = {0};
+
+static volatile MT6835_Velocity_t MT6835_Velocity = {0};
 
 static uint8_t MT6835_TxBuffer[MT6835_ANGLE_FRAME_SIZE] = {
     (uint8_t)(MT6835_OP_BURST_ANGLE << 4U),
@@ -27,9 +31,114 @@ static uint8_t MT6835_RxBuffer[MT6835_ANGLE_FRAME_SIZE] = {0};
 
 static volatile uint8_t MT6835_Initialized = 0U;
 static volatile uint8_t MT6835_TransferBusy = 0U;
+static volatile float MT6835_VelocityFilterCutoffHz =
+    MT6835_DEFAULT_VELOCITY_FILTER_HZ;
+
+static uint32_t MT6835_PreviousVelocityAngle = 0U;
+static uint32_t MT6835_PreviousVelocityCycles = 0U;
+static uint32_t MT6835_PreviousVelocityTickMs = 0U;
+static volatile uint32_t MT6835_CurrentSampleCycles = 0U;
+static volatile uint32_t MT6835_CurrentSampleTickMs = 0U;
+static uint32_t MT6835_CycleClockHz = 0U;
+static uint8_t MT6835_HavePreviousVelocityAngle = 0U;
+static uint8_t MT6835_VelocityFilterInitialized = 0U;
 
 static void MT6835_RxDMAComplete(DMA_HandleTypeDef *hdma);
 static void MT6835_DMAError(DMA_HandleTypeDef *hdma);
+static void MT6835_ResetVelocityState(void);
+static void MT6835_UpdateVelocity(uint32_t raw_angle,
+                                  uint32_t sample_count,
+                                  uint32_t sample_cycles,
+                                  uint32_t sample_tick_ms);
+
+static void MT6835_ResetVelocityState(void)
+{
+    MT6835_Velocity.radians_per_second = 0.0f;
+    MT6835_Velocity.revolutions_per_minute = 0.0f;
+    MT6835_Velocity.sample_count = 0U;
+    MT6835_Velocity.valid = 0U;
+
+    MT6835_PreviousVelocityAngle = 0U;
+    MT6835_PreviousVelocityCycles = 0U;
+    MT6835_PreviousVelocityTickMs = 0U;
+    MT6835_CurrentSampleCycles = 0U;
+    MT6835_CurrentSampleTickMs = 0U;
+    MT6835_HavePreviousVelocityAngle = 0U;
+    MT6835_VelocityFilterInitialized = 0U;
+}
+
+static void MT6835_UpdateVelocity(uint32_t raw_angle,
+                                  uint32_t sample_count,
+                                  uint32_t sample_cycles,
+                                  uint32_t sample_tick_ms)
+{
+    if ((MT6835_HavePreviousVelocityAngle == 0U) ||
+        (MT6835_CycleClockHz == 0U)) {
+        MT6835_PreviousVelocityAngle = raw_angle;
+        MT6835_PreviousVelocityCycles = sample_cycles;
+        MT6835_PreviousVelocityTickMs = sample_tick_ms;
+        MT6835_HavePreviousVelocityAngle = 1U;
+        MT6835_Velocity.valid = 0U;
+        return;
+    }
+
+    const uint32_t previous_angle = MT6835_PreviousVelocityAngle;
+    const uint32_t elapsed_cycles =
+        sample_cycles - MT6835_PreviousVelocityCycles;
+    const uint32_t elapsed_ms =
+        sample_tick_ms - MT6835_PreviousVelocityTickMs;
+
+    MT6835_PreviousVelocityAngle = raw_angle;
+    MT6835_PreviousVelocityCycles = sample_cycles;
+    MT6835_PreviousVelocityTickMs = sample_tick_ms;
+
+    if ((elapsed_cycles == 0U) ||
+        (elapsed_ms > MT6835_MAX_VELOCITY_GAP_MS)) {
+        MT6835_Velocity.valid = 0U;
+        MT6835_VelocityFilterInitialized = 0U;
+        return;
+    }
+
+    int32_t delta_counts =
+        (int32_t)raw_angle - (int32_t)previous_angle;
+
+    if (delta_counts > (int32_t)(MT6835_COUNTS_PER_REVOLUTION / 2U)) {
+        delta_counts -= (int32_t)MT6835_COUNTS_PER_REVOLUTION;
+    } else if (delta_counts <
+               -(int32_t)(MT6835_COUNTS_PER_REVOLUTION / 2U)) {
+        delta_counts += (int32_t)MT6835_COUNTS_PER_REVOLUTION;
+    }
+
+    const float elapsed_seconds =
+        (float)elapsed_cycles / (float)MT6835_CycleClockHz;
+    const float instantaneous_radians_per_second =
+        ((float)delta_counts *
+         (MT6835_TWO_PI / (float)MT6835_COUNTS_PER_REVOLUTION)) /
+        elapsed_seconds;
+    float filtered_radians_per_second =
+        instantaneous_radians_per_second;
+    const float cutoff_hz = MT6835_VelocityFilterCutoffHz;
+
+    if ((cutoff_hz > 0.0f) &&
+        (MT6835_VelocityFilterInitialized != 0U)) {
+        const float rc_seconds = 1.0f / (MT6835_TWO_PI * cutoff_hz);
+        const float alpha = elapsed_seconds / (rc_seconds + elapsed_seconds);
+
+        filtered_radians_per_second =
+            MT6835_Velocity.radians_per_second +
+            alpha * (instantaneous_radians_per_second -
+                     MT6835_Velocity.radians_per_second);
+    }
+
+    MT6835_Velocity.valid = 0U;
+    MT6835_Velocity.radians_per_second = filtered_radians_per_second;
+    MT6835_Velocity.revolutions_per_minute =
+        filtered_radians_per_second * MT6835_RPM_PER_RADIAN_SECOND;
+    MT6835_Velocity.sample_count = sample_count;
+    MT6835_VelocityFilterInitialized = 1U;
+    __DMB();
+    MT6835_Velocity.valid = 1U;
+}
 
 static void MT6835_CSDelay(void)
 {
@@ -141,6 +250,8 @@ static HAL_StatusTypeDef MT6835_StartDMA(void)
     HAL_GPIO_WritePin(ENC_CS_GPIO_Port, ENC_CS_Pin, GPIO_PIN_RESET);
     MT6835_CSDelay();
 
+    MT6835_CurrentSampleCycles = DWT->CYCCNT;
+    MT6835_CurrentSampleTickMs = HAL_GetTick();
     SET_BIT(hspi1.Instance->CR2, SPI_CR2_RXDMAEN | SPI_CR2_TXDMAEN);
     return HAL_OK;
 }
@@ -156,6 +267,16 @@ HAL_StatusTypeDef MT6835_Init(void)
 
     HAL_GPIO_WritePin(ENC_CS_GPIO_Port, ENC_CS_Pin, GPIO_PIN_SET);
     MT6835_StopDMA();
+
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    if ((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) == 0U) {
+        DWT->CYCCNT = 0U;
+        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    }
+    MT6835_CycleClockHz = HAL_RCC_GetHCLKFreq();
+    MT6835_VelocityFilterCutoffHz =
+        MT6835_DEFAULT_VELOCITY_FILTER_HZ;
+    MT6835_ResetVelocityState();
 
     MT6835_Reading.raw_angle = 0U;
     MT6835_Reading.angle_radians = 0.0f;
@@ -235,6 +356,7 @@ void MT6835_DeInit(void)
     __HAL_SPI_DISABLE(&hspi1);
 
     MT6835_Reading.valid = 0U;
+    MT6835_ResetVelocityState();
     MT6835_TransferBusy = 0U;
 }
 
@@ -257,6 +379,77 @@ bool MT6835_GetLatestReading(MT6835_Reading_t *destination)
     __set_PRIMASK(interrupt_state);
 
     return destination->valid != 0U;
+}
+
+bool MT6835_GetLatestVelocity(MT6835_Velocity_t *destination)
+{
+    uint32_t interrupt_state;
+
+    if (destination == NULL) {
+        return false;
+    }
+
+    interrupt_state = __get_PRIMASK();
+    __disable_irq();
+    *destination = MT6835_Velocity;
+    __set_PRIMASK(interrupt_state);
+
+    return destination->valid != 0U;
+}
+
+bool MT6835_GetVelocityRadPerSecond(float *radians_per_second)
+{
+    MT6835_Velocity_t velocity;
+
+    if (radians_per_second == NULL) {
+        return false;
+    }
+
+    if (!MT6835_GetLatestVelocity(&velocity)) {
+        return false;
+    }
+
+    *radians_per_second = velocity.radians_per_second;
+    return true;
+}
+
+bool MT6835_GetVelocityRPM(float *revolutions_per_minute)
+{
+    MT6835_Velocity_t velocity;
+
+    if (revolutions_per_minute == NULL) {
+        return false;
+    }
+
+    if (!MT6835_GetLatestVelocity(&velocity)) {
+        return false;
+    }
+
+    *revolutions_per_minute = velocity.revolutions_per_minute;
+    return true;
+}
+
+void MT6835_SetVelocityFilterCutoff(float cutoff_hz)
+{
+    uint32_t interrupt_state;
+
+    if (cutoff_hz < 0.0f) {
+        cutoff_hz = 0.0f;
+    }
+
+    interrupt_state = __get_PRIMASK();
+    __disable_irq();
+    MT6835_VelocityFilterCutoffHz = cutoff_hz;
+    __set_PRIMASK(interrupt_state);
+}
+
+void MT6835_ResetVelocityEstimator(void)
+{
+    const uint32_t interrupt_state = __get_PRIMASK();
+
+    __disable_irq();
+    MT6835_ResetVelocityState();
+    __set_PRIMASK(interrupt_state);
 }
 
 uint8_t MT6835_CalculateCRC(uint32_t raw_angle, uint8_t status)
@@ -310,6 +503,7 @@ static void MT6835_RxDMAComplete(DMA_HandleTypeDef *hdma)
 
     if (timeout == 0U) {
         MT6835_Reading.valid = 0U;
+        MT6835_Velocity.valid = 0U;
         ++MT6835_Reading.transfer_error_count;
         MT6835_TransferBusy = 0U;
         return;
@@ -332,9 +526,14 @@ static void MT6835_RxDMAComplete(DMA_HandleTypeDef *hdma)
     ++MT6835_Reading.sample_count;
 
     if (calculated_crc == MT6835_RxBuffer[5]) {
+        MT6835_UpdateVelocity(raw_angle,
+                              MT6835_Reading.sample_count,
+                              MT6835_CurrentSampleCycles,
+                              MT6835_CurrentSampleTickMs);
         __DMB();
         MT6835_Reading.valid = 1U;
     } else {
+        MT6835_Velocity.valid = 0U;
         ++MT6835_Reading.crc_error_count;
     }
 
@@ -352,6 +551,7 @@ static void MT6835_DMAError(DMA_HandleTypeDef *hdma)
     HAL_GPIO_WritePin(ENC_CS_GPIO_Port, ENC_CS_Pin, GPIO_PIN_SET);
 
     MT6835_Reading.valid = 0U;
+    MT6835_ResetVelocityState();
     ++MT6835_Reading.transfer_error_count;
     MT6835_Initialized = 0U;
     MT6835_TransferBusy = 0U;

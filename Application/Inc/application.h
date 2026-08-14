@@ -70,11 +70,16 @@ extern volatile float Theta_e;
 extern volatile float Target_Id_External;
 extern volatile float Target_Iq_External;
 extern volatile float DisplayAlphaExternal;
+extern volatile uint8_t VelocityLoopDivision;
+extern volatile float TargetRPMExternal;
+extern volatile float TargetRPM;
+extern volatile float VelocityErrorExternal;
 
 
 void Init();
 void Application_Step(const float dt); // 1000Hz loop
 void FOC_Step(const float dt); // 20kHz loop
+void Velocity_Step(const float dt); // inside FOC step but using 4KHz
 void RequestMotorSoftStop();
 void EmergencyStopMotor();
 

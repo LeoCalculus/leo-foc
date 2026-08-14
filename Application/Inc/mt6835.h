@@ -29,6 +29,7 @@ extern "C" {
 
 #define MT6835_COUNTS_PER_REVOLUTION   (1UL << 21U)
 #define MT6835_MAX_SPI_CLOCK_HZ        16000000UL
+#define MT6835_DEFAULT_VELOCITY_FILTER_HZ 200.0f
 
 #define MT6835_STATUS_OVERSPEED        (1U << 0U)
 #define MT6835_STATUS_WEAK_FIELD       (1U << 1U)
@@ -52,6 +53,13 @@ typedef struct {
     uint8_t valid;                  /* One when the latest frame passed CRC. */
 } MT6835_Reading_t;
 
+typedef struct {
+    float radians_per_second;       /* Positive when raw_angle increases. */
+    float revolutions_per_minute;
+    uint32_t sample_count;          /* Angle frame used for this estimate. */
+    uint8_t valid;                  /* Zero until two valid frames exist. */
+} MT6835_Velocity_t;
+
 /* Updated by the SPI1 RX-DMA completion interrupt. */
 extern volatile MT6835_Reading_t MT6835_Reading;
 
@@ -71,6 +79,25 @@ bool MT6835_IsBusy(void);
 
 /* Copies a coherent snapshot; returns true when its CRC is valid. */
 bool MT6835_GetLatestReading(MT6835_Reading_t *destination);
+
+/*
+ * Copies the latest filtered velocity estimate. The estimate is updated after
+ * every valid angle DMA frame and is positive when raw_angle increases.
+ */
+bool MT6835_GetLatestVelocity(MT6835_Velocity_t *destination);
+
+/* Convenience accessors for the filtered velocity estimate. */
+bool MT6835_GetVelocityRadPerSecond(float *radians_per_second);
+bool MT6835_GetVelocityRPM(float *revolutions_per_minute);
+
+/*
+ * Sets the first-order velocity low-pass cutoff. The default is 200 Hz.
+ * Passing 0 disables filtering and publishes the differentiated raw angle.
+ */
+void MT6835_SetVelocityFilterCutoff(float cutoff_hz);
+
+/* Invalidates velocity until two new valid angle frames have been received. */
+void MT6835_ResetVelocityEstimator(void);
 
 /* CRC-8: polynomial x^8 + x^2 + x + 1 (0x07), initial value zero. */
 uint8_t MT6835_CalculateCRC(uint32_t raw_angle, uint8_t status);

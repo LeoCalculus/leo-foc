@@ -28,8 +28,7 @@ float ParkCurrent[2] = {0.0f}; // Id and Iq
 float UVWCurrent[3] = {0.0f}; // order is UVW
 float UVWVOut[3] = {0.0f};
 volatile float Theta_e = 0.0f;
-
-// foc core parameters:
+volatile uint8_t VelocityLoopDivision = 0;
 
 
 // safety parameters:
@@ -58,9 +57,11 @@ static volatile float Target_Id = 0.0f;
 
 // tune here for current loop - in the end of Init will apply the step response
 volatile float Target_Id_External = 0.0f;
-volatile float Target_Iq_External = -0.6f;
+volatile float Target_Iq_External = 0.5f; // 0.57 is good for application
 volatile float DisplayAlphaExternal = 0.001f;
-
+volatile float TargetRPM = 0.0f;
+volatile float TargetRPMExternal = 1000.0f;
+volatile float VelocityErrorExternal = 0.0f;
 
 PID_t Id_pid = {
     .P = 0.28f,
@@ -74,6 +75,13 @@ PID_t Iq_pid = {
     .I = 100.0f,
     .D = 0.0f,
     .integral_max = 0.069f
+};
+
+PID_t Velocity_pid = {
+    .P = 0.8f, // if I have 1rpm error I wish it starts from Iq = 0.18A
+    .I = 30.0f,
+    .D = 0.0f,
+    .integral_max = 0.1f
 };
 
 // recall meaning Error = Kp * e + Ki * integral (usually max as time goes on)
@@ -110,6 +118,7 @@ void Init() {
     WS2812BINARY.BIT_1 = 120; // this is 111_1000 keep low 7 bits
     // init for MT6835
     MT6835_Init();
+    MT6835_SetVelocityFilterCutoff(20.0f); // encoder is very noisy must use filter
     // connect dma receive:
     HAL_UARTEx_ReceiveToIdle_DMA(&huart4, UARTDMABuffer, sizeof(UARTDMABuffer)-1);
     // disable UART half / full transmit
@@ -162,8 +171,10 @@ void Init() {
         FindEncoderDirectionFlag = 0;
     }
 
-    Target_Iq = Target_Iq_External; // so can debug easier
-    Target_Id = Target_Id_External;
+    // Handler now gives to velocity loop instead
+    TargetRPM = TargetRPMExternal;
+    // Target_Iq = Target_Iq_External; // so can debug easier
+    // Target_Id = Target_Id_External;
     // Blue WS2812 means the FOC is running:
     WS2812_SETPURE(0, 0, 32);
     WS2812_REFRESH();
@@ -174,10 +185,9 @@ void Init() {
 
 void Application_Step(const float dt) {
     // need filter for display, otherwise the wave in vofa is useless
-    static float FilteredId = 0.0f;
     static float FilteredIq = 0.0f;
+    static float FilterRPM = 0.0f;
     const float DisplayFilterAlpha = DisplayAlphaExternal;
-    float RotorAngle = 0.0f;
 
     // reduce the target gradually instead of sudden stop
     if (SoftStopRequested && !EmergencyStopLatched) {
@@ -206,25 +216,32 @@ void Application_Step(const float dt) {
     }
 
     vofa.data[0] = EncoderDirection;
-    MT6835_Reading_t encoder;
-    if (MT6835_GetLatestReading(&encoder)) {
-        RotorAngle = encoder.angle_radians;
+
+    vofa.data[1] = TargetRPM;
+
+    float speed_rpm;
+    float speed_rpm_copy = 0.0f;
+    if (MT6835_GetVelocityRPM(&speed_rpm)) {
+        // speed_rpm is valid
+        speed_rpm_copy = speed_rpm;
     }
+    FilterRPM += DisplayFilterAlpha * (speed_rpm_copy - FilterRPM);
+    vofa.data[2] = speed_rpm_copy;
 
-    vofa.data[1] = RotorAngle;
-    float ElectricAngle = wrap2pif( EncoderDirection * (7.0f * (RotorAngle - ElectricalMechanicalOffset)));
-    vofa.data[2] = ElectricAngle;
+    vofa.data[3] = VelocityErrorExternal;
+    vofa.data[4] = FilterRPM;
 
-    vofa.data[3] = ((float)PhaseCurrent[0]-ADCOffset[0]) * (3.3f/4096.0f) / 50.0f / 0.001f;
-    vofa.data[4] = ((float)PhaseCurrent[1]-ADCOffset[1]) * (3.3f/4096.0f) / 50.0f / 0.001f;
-    vofa.data[5] = ((float)PhaseCurrent[2]-ADCOffset[2]) * (3.3f/4096.0f) / 50.0f / 0.001f;
+    MT6835_Reading_t encoder;
+    // update the struct
+    MT6835_GetLatestReading(&encoder);
+
+    vofa.data[5] = encoder.status;
+
+    vofa.data[6] = (float)encoder.raw_angle;
+    vofa.data[7] = (float)encoder.crc_error_count;
 
     // simple IIR low pass filter for display
-    FilteredId += DisplayFilterAlpha * (ParkCurrent[0] - FilteredId);
     FilteredIq += DisplayFilterAlpha * (ParkCurrent[1] - FilteredIq);
-
-    vofa.data[6] = Target_Id;
-    vofa.data[7] = FilteredId;
     vofa.data[8] = Target_Iq;
     vofa.data[9] = FilteredIq;
 
@@ -239,6 +256,34 @@ void Application_Step(const float dt) {
     HAL_UART_Transmit_DMA(&huart4, (uint8_t*)&vofa, sizeof(vofa));
 }
 
+void Velocity_Step(const float dt) {
+    // using pid to find the corresponding Iq (Id was preferred to be 0 all the time, no need setting for that)
+    static uint32_t LastVelocityCount = 0;
+    static uint8_t FreshVelocity = 0;
+    float RPM = 0.0f;
+    MT6835_Velocity_t velocity;
+    if (!MT6835_GetLatestVelocity(&velocity) || velocity.sample_count == LastVelocityCount) {
+        ++FreshVelocity;
+        if (FreshVelocity >= 100) {
+            // disable everything
+            SoftStopRequested = 1;
+        }
+        return;
+    }
+    FreshVelocity = 0; // get new update reset
+    LastVelocityCount = velocity.sample_count; // speed only valid when encoder get different counts
+    RPM = EncoderDirection * velocity.revolutions_per_minute; // rpm
+    // after getting direction, set up pid
+    float VelocityError = TargetRPM - RPM;
+    VelocityErrorExternal = VelocityError;
+    float IqResult = pid_cycle(&Velocity_pid, VelocityError, dt);
+    // also need handle stop request:
+    if (!SoftStopRequested) { // if is 1 dont ovewrite target_iq
+        Target_Iq = clampf(IqResult, 0.57f, -0.57f); // must within the range
+    }
+
+}
+
 void FOC_Step(const float dt) {
     uint16_t SnapPhaseCurrent[3];
     SnapPhaseCurrent[0] = PhaseCurrent[0];
@@ -248,6 +293,11 @@ void FOC_Step(const float dt) {
     BusVoltageCount = DMAADCBusVoltage;
 
     if (!DisableFOC) {
+        // velocity loop should in advance set up the speed information:
+        if (++VelocityLoopDivision >= 5) {
+            VelocityLoopDivision = 0;
+            Velocity_Step(5.0f*dt); // 4000Hz
+        }
         static float RotorAngle = 0.0f;
         // update dt at 20kHz still need angular velocity
         AccumulatedTimeFoc += SPWM_ANGULAR_VELOCITY_PREFIX * Electric_Frequency * dt; // 2PI * f * t
