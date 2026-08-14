@@ -18,6 +18,8 @@
 volatile MT6835_Reading_t MT6835_Reading = {0};
 
 static volatile MT6835_Velocity_t MT6835_Velocity = {0};
+static volatile int64_t MT6835_TotalAngleCounts = 0;
+static volatile uint8_t MT6835_TotalAngleCountsValid = 0U;
 
 static uint8_t MT6835_TxBuffer[MT6835_ANGLE_FRAME_SIZE] = {
     (uint8_t)(MT6835_OP_BURST_ANGLE << 4U),
@@ -42,10 +44,16 @@ static volatile uint32_t MT6835_CurrentSampleTickMs = 0U;
 static uint32_t MT6835_CycleClockHz = 0U;
 static uint8_t MT6835_HavePreviousVelocityAngle = 0U;
 static uint8_t MT6835_VelocityFilterInitialized = 0U;
+static uint32_t MT6835_PreviousPositionAngle = 0U;
+static uint8_t MT6835_HavePreviousPositionAngle = 0U;
 
 static void MT6835_RxDMAComplete(DMA_HandleTypeDef *hdma);
 static void MT6835_DMAError(DMA_HandleTypeDef *hdma);
 static void MT6835_ResetVelocityState(void);
+static void MT6835_ResetPositionState(void);
+static int32_t MT6835_WrappedAngleDelta(uint32_t raw_angle,
+                                        uint32_t previous_angle);
+static void MT6835_UpdatePosition(uint32_t raw_angle);
 static void MT6835_UpdateVelocity(uint32_t raw_angle,
                                   uint32_t sample_count,
                                   uint32_t sample_cycles,
@@ -65,6 +73,49 @@ static void MT6835_ResetVelocityState(void)
     MT6835_CurrentSampleTickMs = 0U;
     MT6835_HavePreviousVelocityAngle = 0U;
     MT6835_VelocityFilterInitialized = 0U;
+}
+
+static void MT6835_ResetPositionState(void)
+{
+    MT6835_TotalAngleCounts = 0;
+    MT6835_TotalAngleCountsValid = 0U;
+    MT6835_PreviousPositionAngle = 0U;
+    MT6835_HavePreviousPositionAngle = 0U;
+}
+
+static int32_t MT6835_WrappedAngleDelta(uint32_t raw_angle,
+                                        uint32_t previous_angle)
+{
+    int32_t delta_counts =
+        (int32_t)raw_angle - (int32_t)previous_angle;
+
+    if (delta_counts > (int32_t)(MT6835_COUNTS_PER_REVOLUTION / 2U)) {
+        delta_counts -= (int32_t)MT6835_COUNTS_PER_REVOLUTION;
+    } else if (delta_counts <
+               -(int32_t)(MT6835_COUNTS_PER_REVOLUTION / 2U)) {
+        delta_counts += (int32_t)MT6835_COUNTS_PER_REVOLUTION;
+    }
+
+    return delta_counts;
+}
+
+static void MT6835_UpdatePosition(uint32_t raw_angle)
+{
+    if (MT6835_HavePreviousPositionAngle == 0U) {
+        MT6835_PreviousPositionAngle = raw_angle;
+        MT6835_TotalAngleCounts = 0;
+        MT6835_HavePreviousPositionAngle = 1U;
+    } else {
+        const int32_t delta_counts =
+            MT6835_WrappedAngleDelta(raw_angle,
+                                     MT6835_PreviousPositionAngle);
+
+        MT6835_PreviousPositionAngle = raw_angle;
+        MT6835_TotalAngleCounts += (int64_t)delta_counts;
+    }
+
+    __DMB();
+    MT6835_TotalAngleCountsValid = 1U;
 }
 
 static void MT6835_UpdateVelocity(uint32_t raw_angle,
@@ -99,15 +150,8 @@ static void MT6835_UpdateVelocity(uint32_t raw_angle,
         return;
     }
 
-    int32_t delta_counts =
-        (int32_t)raw_angle - (int32_t)previous_angle;
-
-    if (delta_counts > (int32_t)(MT6835_COUNTS_PER_REVOLUTION / 2U)) {
-        delta_counts -= (int32_t)MT6835_COUNTS_PER_REVOLUTION;
-    } else if (delta_counts <
-               -(int32_t)(MT6835_COUNTS_PER_REVOLUTION / 2U)) {
-        delta_counts += (int32_t)MT6835_COUNTS_PER_REVOLUTION;
-    }
+    const int32_t delta_counts =
+        MT6835_WrappedAngleDelta(raw_angle, previous_angle);
 
     const float elapsed_seconds =
         (float)elapsed_cycles / (float)MT6835_CycleClockHz;
@@ -277,6 +321,7 @@ HAL_StatusTypeDef MT6835_Init(void)
     MT6835_VelocityFilterCutoffHz =
         MT6835_DEFAULT_VELOCITY_FILTER_HZ;
     MT6835_ResetVelocityState();
+    MT6835_ResetPositionState();
 
     MT6835_Reading.raw_angle = 0U;
     MT6835_Reading.angle_radians = 0.0f;
@@ -357,6 +402,7 @@ void MT6835_DeInit(void)
 
     MT6835_Reading.valid = 0U;
     MT6835_ResetVelocityState();
+    MT6835_ResetPositionState();
     MT6835_TransferBusy = 0U;
 }
 
@@ -427,6 +473,68 @@ bool MT6835_GetVelocityRPM(float *revolutions_per_minute)
 
     *revolutions_per_minute = velocity.revolutions_per_minute;
     return true;
+}
+
+bool MT6835_GetTotalAngleCounts(int64_t *total_angle_counts)
+{
+    uint32_t interrupt_state;
+    uint8_t valid;
+
+    if (total_angle_counts == NULL) {
+        return false;
+    }
+
+    interrupt_state = __get_PRIMASK();
+    __disable_irq();
+    *total_angle_counts = MT6835_TotalAngleCounts;
+    valid = MT6835_TotalAngleCountsValid;
+    __set_PRIMASK(interrupt_state);
+
+    return valid != 0U;
+}
+
+bool MT6835_GetTotalRevolutions(float *total_revolutions)
+{
+    int64_t total_angle_counts;
+
+    if (total_revolutions == NULL) {
+        return false;
+    }
+
+    if (!MT6835_GetTotalAngleCounts(&total_angle_counts)) {
+        return false;
+    }
+
+    *total_revolutions =
+        (float)total_angle_counts /
+        (float)MT6835_COUNTS_PER_REVOLUTION;
+    return true;
+}
+
+bool MT6835_GetDistanceMeters(float *distance_meters)
+{
+    float total_revolutions;
+
+    if (distance_meters == NULL) {
+        return false;
+    }
+
+    if (!MT6835_GetTotalRevolutions(&total_revolutions)) {
+        return false;
+    }
+
+    *distance_meters =
+        total_revolutions * MT6835_TWO_PI * MotorRadius;
+    return true;
+}
+
+void MT6835_ResetTotalAngleCounts(void)
+{
+    const uint32_t interrupt_state = __get_PRIMASK();
+
+    __disable_irq();
+    MT6835_TotalAngleCounts = 0;
+    __set_PRIMASK(interrupt_state);
 }
 
 void MT6835_SetVelocityFilterCutoff(float cutoff_hz)
@@ -504,6 +612,7 @@ static void MT6835_RxDMAComplete(DMA_HandleTypeDef *hdma)
     if (timeout == 0U) {
         MT6835_Reading.valid = 0U;
         MT6835_Velocity.valid = 0U;
+        MT6835_TotalAngleCountsValid = 0U;
         ++MT6835_Reading.transfer_error_count;
         MT6835_TransferBusy = 0U;
         return;
@@ -526,6 +635,7 @@ static void MT6835_RxDMAComplete(DMA_HandleTypeDef *hdma)
     ++MT6835_Reading.sample_count;
 
     if (calculated_crc == MT6835_RxBuffer[5]) {
+        MT6835_UpdatePosition(raw_angle);
         MT6835_UpdateVelocity(raw_angle,
                               MT6835_Reading.sample_count,
                               MT6835_CurrentSampleCycles,
@@ -534,6 +644,7 @@ static void MT6835_RxDMAComplete(DMA_HandleTypeDef *hdma)
         MT6835_Reading.valid = 1U;
     } else {
         MT6835_Velocity.valid = 0U;
+        MT6835_TotalAngleCountsValid = 0U;
         ++MT6835_Reading.crc_error_count;
     }
 
@@ -552,6 +663,7 @@ static void MT6835_DMAError(DMA_HandleTypeDef *hdma)
 
     MT6835_Reading.valid = 0U;
     MT6835_ResetVelocityState();
+    MT6835_ResetPositionState();
     ++MT6835_Reading.transfer_error_count;
     MT6835_Initialized = 0U;
     MT6835_TransferBusy = 0U;

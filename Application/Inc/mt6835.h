@@ -30,6 +30,7 @@ extern "C" {
 #define MT6835_COUNTS_PER_REVOLUTION   (1UL << 21U)
 #define MT6835_MAX_SPI_CLOCK_HZ        16000000UL
 #define MT6835_DEFAULT_VELOCITY_FILTER_HZ 200.0f
+#define MotorRadius                    0.025f /* m */
 
 #define MT6835_STATUS_OVERSPEED        (1U << 0U)
 #define MT6835_STATUS_WEAK_FIELD       (1U << 1U)
@@ -89,6 +90,26 @@ bool MT6835_GetLatestVelocity(MT6835_Velocity_t *destination);
 /* Convenience accessors for the filtered velocity estimate. */
 bool MT6835_GetVelocityRadPerSecond(float *radians_per_second);
 bool MT6835_GetVelocityRPM(float *revolutions_per_minute);
+
+/*
+ * Returns the signed multi-turn position accumulated from valid angle frames.
+ * The first valid frame defines zero and one revolution is exactly
+ * MT6835_COUNTS_PER_REVOLUTION counts. Positive counts follow increasing
+ * raw_angle. The 64-bit value is copied atomically with respect to the DMA ISR.
+ */
+bool MT6835_GetTotalAngleCounts(int64_t *total_angle_counts);
+
+/* Returns signed mechanical revolutions relative to the position zero. */
+bool MT6835_GetTotalRevolutions(float *total_revolutions);
+
+/*
+ * Returns signed direct-drive travel distance in meters using
+ * MotorRadius.
+ */
+bool MT6835_GetDistanceMeters(float *distance_meters);
+
+/* Zeros the accumulated position at the latest accepted angle sample. */
+void MT6835_ResetTotalAngleCounts(void);
 
 /*
  * Sets the first-order velocity low-pass cutoff. The default is 200 Hz.

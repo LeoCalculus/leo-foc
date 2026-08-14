@@ -74,12 +74,15 @@ extern volatile uint8_t VelocityLoopDivision;
 extern volatile float TargetRPMExternal;
 extern volatile float TargetRPM;
 extern volatile float VelocityErrorExternal;
-
+extern volatile uint8_t PositionLoopDivision;
+extern volatile float TargetDistance;
+extern volatile float TargetDistanceExternal;
 
 void Init();
 void Application_Step(const float dt); // 1000Hz loop
 void FOC_Step(const float dt); // 20kHz loop
 void Velocity_Step(const float dt); // inside FOC step but using 4KHz
+void Position_Step(const float dt); // inside FOC loop ( Velocity Loop)
 void RequestMotorSoftStop();
 void EmergencyStopMotor();
 

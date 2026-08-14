@@ -29,7 +29,7 @@ float UVWCurrent[3] = {0.0f}; // order is UVW
 float UVWVOut[3] = {0.0f};
 volatile float Theta_e = 0.0f;
 volatile uint8_t VelocityLoopDivision = 0;
-
+volatile uint8_t PositionLoopDivision = 0;
 
 // safety parameters:
 static volatile uint8_t SoftStopRequested = 0;
@@ -50,6 +50,7 @@ static volatile uint32_t DirectionPositiveCounter = 0;
 static volatile uint32_t DirectionNegativeCounter = 0;
 static volatile float AccTimeFocDirectionCalib = 0.0f;
 static volatile float EncoderDirection = 0;
+volatile float AccumulatedMechanicalAngle = 0.0f;
 
 // Internal signals for FOC
 static volatile float Target_Iq = 0.0f;
@@ -62,6 +63,8 @@ volatile float DisplayAlphaExternal = 0.001f;
 volatile float TargetRPM = 0.0f;
 volatile float TargetRPMExternal = 1000.0f;
 volatile float VelocityErrorExternal = 0.0f;
+volatile float TargetDistance = 0.0f;
+volatile float TargetDistanceExternal = 0.314f;
 
 PID_t Id_pid = {
     .P = 0.28f,
@@ -80,6 +83,13 @@ PID_t Iq_pid = {
 PID_t Velocity_pid = {
     .P = 0.8f, // if I have 1rpm error I wish it starts from Iq = 0.18A
     .I = 30.0f,
+    .D = 0.0f,
+    .integral_max = 0.1f
+};
+
+PID_t Position_pid = {
+    .P = 2000.0f,
+    .I = 50.0f,
     .D = 0.0f,
     .integral_max = 0.1f
 };
@@ -171,8 +181,10 @@ void Init() {
         FindEncoderDirectionFlag = 0;
     }
 
+    HAL_Delay(2000);
     // Handler now gives to velocity loop instead
-    TargetRPM = TargetRPMExternal;
+    MT6835_ResetTotalAngleCounts();
+    TargetDistance = TargetDistanceExternal;
     // Target_Iq = Target_Iq_External; // so can debug easier
     // Target_Id = Target_Id_External;
     // Blue WS2812 means the FOC is running:
@@ -237,8 +249,15 @@ void Application_Step(const float dt) {
 
     vofa.data[5] = encoder.status;
 
-    vofa.data[6] = (float)encoder.raw_angle;
-    vofa.data[7] = (float)encoder.crc_error_count;
+    float position_meters;
+    if (!MT6835_GetDistanceMeters(&position_meters)) {
+        return; // Or trigger encoder-fault handling
+    }
+
+    position_meters *= EncoderDirection;
+
+    vofa.data[6] = TargetDistance;
+    vofa.data[7] = position_meters;
 
     // simple IIR low pass filter for display
     FilteredIq += DisplayFilterAlpha * (ParkCurrent[1] - FilteredIq);
@@ -284,6 +303,19 @@ void Velocity_Step(const float dt) {
 
 }
 
+void Position_Step(const float dt) {
+    float position_meters;
+    if (!MT6835_GetDistanceMeters(&position_meters)) {
+        return; // Or trigger encoder-fault handling
+    }
+
+    position_meters *= EncoderDirection;
+    TargetDistance = TargetDistanceExternal;
+    float PositionError = TargetDistance - position_meters;
+    float OutputSpeed = pid_cycle(&Position_pid, PositionError, dt); // in terms of rpm
+    TargetRPM = clampf(OutputSpeed, 3600.0f, -3600.0f);
+}
+
 void FOC_Step(const float dt) {
     uint16_t SnapPhaseCurrent[3];
     SnapPhaseCurrent[0] = PhaseCurrent[0];
@@ -295,6 +327,10 @@ void FOC_Step(const float dt) {
     if (!DisableFOC) {
         // velocity loop should in advance set up the speed information:
         if (++VelocityLoopDivision >= 5) {
+            if (++PositionLoopDivision >= 4) { // so 1000Hz
+                PositionLoopDivision = 0;
+                Position_Step(20.0f*dt);
+            }
             VelocityLoopDivision = 0;
             Velocity_Step(5.0f*dt); // 4000Hz
         }
