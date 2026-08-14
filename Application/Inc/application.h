@@ -67,8 +67,9 @@ extern float UVWVOut[3];
 extern volatile float Theta_e;
 
 // foc core parameters:
-extern volatile float Target_Id;
-extern volatile float Target_Iq;
+extern volatile float Target_Id_External;
+extern volatile float Target_Iq_External;
+extern volatile float DisplayAlphaExternal;
 
 
 void Init();

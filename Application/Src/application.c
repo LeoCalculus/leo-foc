@@ -30,8 +30,7 @@ float UVWVOut[3] = {0.0f};
 volatile float Theta_e = 0.0f;
 
 // foc core parameters:
-volatile float Target_Id = 0.0f;
-volatile float Target_Iq = 0.0f;
+
 
 // safety parameters:
 static volatile uint8_t SoftStopRequested = 0;
@@ -53,19 +52,54 @@ static volatile uint32_t DirectionNegativeCounter = 0;
 static volatile float AccTimeFocDirectionCalib = 0.0f;
 static volatile float EncoderDirection = 0;
 
+// Internal signals for FOC
+static volatile float Target_Iq = 0.0f;
+static volatile float Target_Id = 0.0f;
+
+// tune here for current loop - in the end of Init will apply the step response
+volatile float Target_Id_External = 0.0f;
+volatile float Target_Iq_External = -0.6f;
+volatile float DisplayAlphaExternal = 0.001f;
+
+
 PID_t Id_pid = {
-    .P = 0.1f,
-    .I = 300.0f,
+    .P = 0.28f,
+    .I = 100.0f,
     .D = 0.0f,
-    .integral_max = 0.0025f
+    .integral_max = 0.033f
 };
 
-PID_t Iq_pid = {
-    .P = 0.6f,
-    .I = 300.0f,
+// forward p:
+/*
+PID_t Id_pid = {
+    .P = 0.37f,
+    .I = 100.0f,
     .D = 0.0f,
-    .integral_max = 0.018f
+    .integral_max = 0.034f
 };
+ */
+
+// d-axis current is oscillating -> decrease P, increase I
+// d-axis mainly above 0 -> need I
+
+PID_t Iq_pid = {
+    .P = 0.52f,
+    .I = 100.0f,
+    .D = 0.0f,
+    .integral_max = 0.069f
+};
+
+// forward q:
+/*
+PID_t Iq_pid = {
+    .P = 0.52f,
+    .I = 100.0f,
+    .D = 0.0f,
+    .integral_max = 0.072f
+};
+ */
+
+// recall meaning Error = Kp * e + Ki * integral (usually max as time goes on)
 
 void RequestMotorSoftStop() {
     if (!EmergencyStopLatched) {
@@ -151,7 +185,8 @@ void Init() {
         FindEncoderDirectionFlag = 0;
     }
 
-    Target_Iq = 0.4f;
+    Target_Iq = Target_Iq_External; // so can debug easier
+    Target_Id = Target_Id_External;
     // Blue WS2812 means the FOC is running:
     WS2812_SETPURE(0, 0, 32);
     WS2812_REFRESH();
@@ -164,7 +199,7 @@ void Application_Step(const float dt) {
     // need filter for display, otherwise the wave in vofa is useless
     static float FilteredId = 0.0f;
     static float FilteredIq = 0.0f;
-    const float DisplayFilterAlpha = 0.05f;
+    const float DisplayFilterAlpha = DisplayAlphaExternal;
     float RotorAngle = 0.0f;
 
     // reduce the target gradually instead of sudden stop
