@@ -20,9 +20,14 @@
 #include <ws2812.h>
 #include <utils.h>
 #include <mt6835.h>
+#include <initialization.h>
+#include <velocityLoop.h>
+#include <positionLoop.h>
 
 
 // USER defines
+#define PostionLoop
+#define VelocityLoop
 #define PI 3.14159265358979323846f
 #define TWO_PI 6.28318530717958647692f
 #define SPWM_ANGULAR_VELOCITY_PREFIX (2.0f*PI) // 2*PI*f = w
@@ -78,11 +83,8 @@ extern volatile uint8_t PositionLoopDivision;
 extern volatile float TargetDistance;
 extern volatile float TargetDistanceExternal;
 
-void Init();
 void Application_Step(const float dt); // 1000Hz loop
 void FOC_Step(const float dt); // 20kHz loop
-void Velocity_Step(const float dt); // inside FOC step but using 4KHz
-void Position_Step(const float dt); // inside FOC loop ( Velocity Loop)
 void RequestMotorSoftStop();
 void EmergencyStopMotor();
 

@@ -53,7 +53,13 @@ add_executable(${CMAKE_PROJECT_NAME}
         Application/Src/mt6835.c
         Application/Inc/mt6835.h
         Application/Src/command.c
-        Application/Inc/command.h)
+        Application/Inc/command.h
+        Application/Src/initialization.c
+        Application/Inc/initialization.h
+        Application/Src/positionLoop.c
+        Application/Inc/positionLoop.h
+        Application/Src/velocityLoop.c
+        Application/Inc/velocityLoop.h)
 
 #file(GLOB application_sources Application/Src/*.c)
 #file(GLOB application_include Application/Inc/*.h)

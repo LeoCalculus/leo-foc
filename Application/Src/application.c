@@ -32,28 +32,28 @@ volatile uint8_t VelocityLoopDivision = 0;
 volatile uint8_t PositionLoopDivision = 0;
 
 // safety parameters:
-static volatile uint8_t SoftStopRequested = 0;
+volatile uint8_t SoftStopRequested = 0;
 static volatile uint8_t EmergencyStopLatched = 0;
 
 static volatile float AccumulatedTimeFoc = 0.0f; // this counter used for FOC step
-static volatile uint8_t CalibrateADCFlag = 0; // flag used in current loop
+volatile uint8_t CalibrateADCFlag = 0; // flag used in current loop
 static volatile uint16_t CalibrationCounts = 4096; // sample this many of times
-static volatile uint8_t CalibrationElectricAngleSignal = 0;
+volatile uint8_t CalibrationElectricAngleSignal = 0;
 static volatile uint16_t CalibrationElectricAngleCounts = 4096;
-static volatile uint8_t FindElectricAngleFlag = 0; // flag in current loop
-static volatile uint8_t FindEncoderDirectionFlag = 0; // flag in current loop
-static volatile float ElectricalMechanicalOffset = 0.0f; // offset of encoder
-static volatile float AngleSinSum = 0.0f;
-static volatile float AngleCosSum = 0.0f;
+volatile uint8_t FindElectricAngleFlag = 0; // flag in current loop
+volatile uint8_t FindEncoderDirectionFlag = 0; // flag in current loop
+volatile float ElectricalMechanicalOffset = 0.0f; // offset of encoder
+volatile float AngleSinSum = 0.0f;
+volatile float AngleCosSum = 0.0f;
 static volatile float EncoderLastReading = 0.0f;
-static volatile uint32_t DirectionPositiveCounter = 0;
-static volatile uint32_t DirectionNegativeCounter = 0;
+volatile uint32_t DirectionPositiveCounter = 0;
+volatile uint32_t DirectionNegativeCounter = 0;
 static volatile float AccTimeFocDirectionCalib = 0.0f;
-static volatile float EncoderDirection = 0;
+volatile float EncoderDirection = 0;
 volatile float AccumulatedMechanicalAngle = 0.0f;
 
 // Internal signals for FOC
-static volatile float Target_Iq = 0.0f;
+volatile float Target_Iq = 0.0f;
 static volatile float Target_Id = 0.0f;
 
 // tune here for current loop - in the end of Init will apply the step response
@@ -80,20 +80,6 @@ PID_t Iq_pid = {
     .integral_max = 0.069f
 };
 
-PID_t Velocity_pid = {
-    .P = 0.8f, // if I have 1rpm error I wish it starts from Iq = 0.18A
-    .I = 30.0f,
-    .D = 0.0f,
-    .integral_max = 0.1f
-};
-
-PID_t Position_pid = {
-    .P = 2000.0f,
-    .I = 50.0f,
-    .D = 0.0f,
-    .integral_max = 0.1f
-};
-
 // recall meaning Error = Kp * e + Ki * integral (usually max as time goes on)
 
 void RequestMotorSoftStop() {
@@ -115,84 +101,6 @@ void EmergencyStopMotor() {
     Id_pid.err_m1 = 0.0f;
     Iq_pid.integral = 0.0f;
     Iq_pid.err_m1 = 0.0f;
-}
-
-void Init() {
-    // vofa just float
-    vofa.tail[0] = 0x00;
-    vofa.tail[1] = 0x00;
-    vofa.tail[2] = 0x80;
-    vofa.tail[3] = 0x7F;
-    // set ws2812 bits:
-    WS2812BINARY.BIT_0 = 96; // this is 110_0000 keep low 7 bits
-    WS2812BINARY.BIT_1 = 120; // this is 111_1000 keep low 7 bits
-    // init for MT6835
-    MT6835_Init();
-    MT6835_SetVelocityFilterCutoff(20.0f); // encoder is very noisy must use filter
-    // connect dma receive:
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart4, UARTDMABuffer, sizeof(UARTDMABuffer)-1);
-    // disable UART half / full transmit
-    __HAL_DMA_DISABLE_IT(huart4.hdmarx, DMA_IT_HT);
-    // enable VOFA only when all settings are done
-    HAL_TIM_Base_Start_IT(&htim6);
-    // start FSM, encoder must be enabled at this stage
-    if (CurrentState == EnterState && NextState == CalibrateADC) {
-        // update state first:
-        CurrentState = CalibrateADC;
-        NextState = FindElectricAngle;
-        CalibrateADCFlag = 1; // flag turned off inside FOC loop
-        // USE LED to hint:
-        WS2812_SETPURE(0, 32, 0);
-        WS2812_REFRESH();
-        HAL_Delay(1000); // 1s is sufficient
-    }
-
-    if (CurrentState == CalibrateADC && NextState == FindElectricAngle) {
-        CurrentState = FindElectricAngle;
-        NextState = FindEncoderDirection;
-        FindElectricAngleFlag = 1; // flag turned off below
-        // USE LED to hint
-        WS2812_SETPURE(32, 32, 0); // yellow for finding angle offset
-        WS2812_REFRESH();
-        HAL_Delay(2500); // actually should be less than 2.5 seconds
-        // deal with encoder offset
-        CalibrationElectricAngleSignal = 1; // start sample 4096 times
-        HAL_Delay(500);
-        ElectricalMechanicalOffset = atan2f(AngleSinSum, AngleCosSum); // self division to get the average result, this number should within 0 to 2pi
-        if (ElectricalMechanicalOffset < 0.0f) {
-            ElectricalMechanicalOffset += TWO_PI;
-        }
-        FindElectricAngleFlag = 0; // disable the flag
-    }
-
-    // lastly find the encoder increment information:
-    if (CurrentState == FindElectricAngle && NextState == FindEncoderDirection) {
-        CurrentState = FindEncoderDirection;
-        FindEncoderDirectionFlag = 1;
-        // apply positive direction magnetic field:
-        WS2812_SETPURE(25, 16, 0); // yellow for finding angle offset
-        WS2812_REFRESH();
-        HAL_Delay(2000); // delay just show led, actual run should within this time
-        if (DirectionPositiveCounter > DirectionNegativeCounter) { // they will not equal unless motor not moving
-            EncoderDirection = 1.0f;
-        } else if (DirectionPositiveCounter < DirectionNegativeCounter) {
-            EncoderDirection = -1.0f;
-        } // if equal just keep 0.0f
-        FindEncoderDirectionFlag = 0;
-    }
-
-    HAL_Delay(2000);
-    // Handler now gives to velocity loop instead
-    MT6835_ResetTotalAngleCounts();
-    TargetDistance = TargetDistanceExternal;
-    // Target_Iq = Target_Iq_External; // so can debug easier
-    // Target_Id = Target_Id_External;
-    // Blue WS2812 means the FOC is running:
-    WS2812_SETPURE(0, 0, 32);
-    WS2812_REFRESH();
-    // Finally run FOC normally:
-    DisableFOC = 0;
-    // after this function will enter the main loop
 }
 
 void Application_Step(const float dt) {
@@ -275,47 +183,6 @@ void Application_Step(const float dt) {
     HAL_UART_Transmit_DMA(&huart4, (uint8_t*)&vofa, sizeof(vofa));
 }
 
-void Velocity_Step(const float dt) {
-    // using pid to find the corresponding Iq (Id was preferred to be 0 all the time, no need setting for that)
-    static uint32_t LastVelocityCount = 0;
-    static uint8_t FreshVelocity = 0;
-    float RPM = 0.0f;
-    MT6835_Velocity_t velocity;
-    if (!MT6835_GetLatestVelocity(&velocity) || velocity.sample_count == LastVelocityCount) {
-        ++FreshVelocity;
-        if (FreshVelocity >= 100) {
-            // disable everything
-            SoftStopRequested = 1;
-        }
-        return;
-    }
-    FreshVelocity = 0; // get new update reset
-    LastVelocityCount = velocity.sample_count; // speed only valid when encoder get different counts
-    RPM = EncoderDirection * velocity.revolutions_per_minute; // rpm
-    // after getting direction, set up pid
-    float VelocityError = TargetRPM - RPM;
-    VelocityErrorExternal = VelocityError;
-    float IqResult = pid_cycle(&Velocity_pid, VelocityError, dt);
-    // also need handle stop request:
-    if (!SoftStopRequested) { // if is 1 dont ovewrite target_iq
-        Target_Iq = clampf(IqResult, 0.57f, -0.57f); // must within the range
-    }
-
-}
-
-void Position_Step(const float dt) {
-    float position_meters;
-    if (!MT6835_GetDistanceMeters(&position_meters)) {
-        return; // Or trigger encoder-fault handling
-    }
-
-    position_meters *= EncoderDirection;
-    TargetDistance = TargetDistanceExternal;
-    float PositionError = TargetDistance - position_meters;
-    float OutputSpeed = pid_cycle(&Position_pid, PositionError, dt); // in terms of rpm
-    TargetRPM = clampf(OutputSpeed, 3600.0f, -3600.0f);
-}
-
 void FOC_Step(const float dt) {
     uint16_t SnapPhaseCurrent[3];
     SnapPhaseCurrent[0] = PhaseCurrent[0];
@@ -325,15 +192,19 @@ void FOC_Step(const float dt) {
     BusVoltageCount = DMAADCBusVoltage;
 
     if (!DisableFOC) {
+#ifdef VelocityLoop
         // velocity loop should in advance set up the speed information:
         if (++VelocityLoopDivision >= 5) {
+#ifdef PostionLoop
             if (++PositionLoopDivision >= 4) { // so 1000Hz
                 PositionLoopDivision = 0;
                 Position_Step(20.0f*dt);
             }
+#endif
             VelocityLoopDivision = 0;
             Velocity_Step(5.0f*dt); // 4000Hz
         }
+#endif
         static float RotorAngle = 0.0f;
         // update dt at 20kHz still need angular velocity
         AccumulatedTimeFoc += SPWM_ANGULAR_VELOCITY_PREFIX * Electric_Frequency * dt; // 2PI * f * t
