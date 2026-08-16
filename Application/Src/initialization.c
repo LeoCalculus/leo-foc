@@ -22,16 +22,25 @@ void Init() {
     __HAL_DMA_DISABLE_IT(huart4.hdmarx, DMA_IT_HT);
     // enable VOFA only when all settings are done
     HAL_TIM_Base_Start_IT(&htim6);
+    HAL_Delay(500);
     // start FSM, encoder must be enabled at this stage
     if (CurrentState == EnterState && NextState == CalibrateADC) {
         // update state first:
         CurrentState = CalibrateADC;
         NextState = FindElectricAngle;
-        CalibrateADCFlag = 1; // flag turned off inside FOC loop
-        // USE LED to hint:
-        WS2812_SETPURE(0, 32, 0);
-        WS2812_REFRESH();
-        HAL_Delay(1000); // 1s is sufficient
+        // check BUS voltage first
+        uint32_t BusVoltageCount = 0;
+        BusVoltageCount = DMAADCBusVoltage;
+        float BusVoltage = (float)BusVoltageCount * (3.3f/4096.0f) / 1000.0f * 16000.0f;
+        if (BusVoltage <= 20.0f || BusVoltage >= 28.0f) {
+            NextState = ErrorState; // Bus Voltage Error
+        } else {
+            CalibrateADCFlag = 1; // flag turned off inside FOC loop
+            // USE LED to hint:
+            WS2812_SETPURE(0, 32, 0);
+            WS2812_REFRESH();
+            HAL_Delay(1000); // 1s is sufficient
+        }
     }
 
     if (CurrentState == CalibrateADC && NextState == FindElectricAngle) {
@@ -68,11 +77,21 @@ void Init() {
         FindEncoderDirectionFlag = 0;
     }
 
+    // this means the error state from Bus Voltage Reading
+    if (CurrentState == CalibrateADC && NextState == ErrorState) {
+        WS2812_SETPURE(32, 0, 0); // yellow for finding angle offset
+        WS2812_REFRESH();
+        EmergencyStopMotor(); // disable everything and wait for reset
+        return; // dont execute following code
+    }
+
     HAL_Delay(2000);
     // Handler now gives to velocity loop instead
+#ifdef PostionLoop
     MT6835_ResetTotalAngleCounts();
     TargetDistance = TargetDistanceExternal;
-    // Target_Iq = Target_Iq_External; // so can debug easier
+#endif
+    Target_Iq = Target_Iq_External; // so can debug easier
     // Target_Id = Target_Id_External;
     // Blue WS2812 means the FOC is running:
     WS2812_SETPURE(0, 0, 32);

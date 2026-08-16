@@ -23,5 +23,6 @@ void ParkTransform();
 void ReverseClarkTransform();
 void ReverseParkTransform(float VId, float VIq);
 float pid_cycle(PID_t *sys, float err, const float delta_t);
+void BusVoltageCheck();
 
 #endif //LEO_FOC_UTILS_H

@@ -58,7 +58,7 @@ static volatile float Target_Id = 0.0f;
 
 // tune here for current loop - in the end of Init will apply the step response
 volatile float Target_Id_External = 0.0f;
-volatile float Target_Iq_External = 0.5f; // 0.57 is good for application
+volatile float Target_Iq_External = 0.3f; // 0.57 is good for application
 volatile float DisplayAlphaExternal = 0.001f;
 volatile float TargetRPM = 0.0f;
 volatile float TargetRPMExternal = 1000.0f;
@@ -137,7 +137,17 @@ void Application_Step(const float dt) {
 
     vofa.data[0] = EncoderDirection;
 
-    vofa.data[1] = TargetRPM;
+    uint32_t BusVoltageCount = 0;
+    BusVoltageCount = DMAADCBusVoltage;
+    float BusVoltage = (float)BusVoltageCount * (3.3f/4096.0f) / 1000.0f * 16000.0f;
+
+    if (BusVoltage <= 20.0f || BusVoltage >= 28.0f) {
+        EmergencyStopMotor();
+        WS2812_SETPURE(32, 0, 0);
+        WS2812_REFRESH();
+    }
+
+    vofa.data[1] = BusVoltage;
 
     float speed_rpm;
     float speed_rpm_copy = 0.0f;

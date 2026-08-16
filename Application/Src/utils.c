@@ -68,3 +68,15 @@ void ReverseParkTransform(float VId, float VIq) {
     ClarkV[0] = VId * cosf(Theta_e) - VIq * sinf(Theta_e); // Va
     ClarkV[1] = VId * sinf(Theta_e) + VIq * cosf(Theta_e); // Vb
 }
+
+void BusVoltageCheck() {
+    uint32_t BusVoltageCount = 0;
+    BusVoltageCount = DMAADCBusVoltage;
+    float BusVoltage = (float)BusVoltageCount * (3.3f/4096.0f) / 1000.0f * 16000.0f;
+
+    if (BusVoltage <= 20.0f || BusVoltage >= 28.0f) {
+        EmergencyStopMotor();
+        WS2812_SETPURE(32, 0, 0);
+        WS2812_REFRESH();
+    }
+}
