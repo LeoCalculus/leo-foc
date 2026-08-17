@@ -4,6 +4,8 @@
 
 #include "../Inc/initialization.h"
 
+volatile uint8_t DoRotateElectricAngle = 0;
+
 void Init() {
     // vofa just float
     vofa.tail[0] = 0x00;
@@ -43,6 +45,7 @@ void Init() {
         }
     }
 
+    // find electric angle need rotate and then attach
     if (CurrentState == CalibrateADC && NextState == FindElectricAngle) {
         CurrentState = FindElectricAngle;
         NextState = FindEncoderDirection;
@@ -50,7 +53,11 @@ void Init() {
         // USE LED to hint
         WS2812_SETPURE(32, 32, 0); // yellow for finding angle offset
         WS2812_REFRESH();
-        HAL_Delay(2500); // actually should be less than 2.5 seconds
+        // in next 1s do some rotation:
+        DoRotateElectricAngle = 1;
+        HAL_Delay(1000); // actually should be less than 2.5 seconds
+        DoRotateElectricAngle = 0; // shut down and start attach immediately
+        HAL_Delay(1000); // another 1s wait for rotor to stop
         // deal with encoder offset
         CalibrationElectricAngleSignal = 1; // start sample 4096 times
         HAL_Delay(500);
@@ -91,7 +98,11 @@ void Init() {
     MT6835_ResetTotalAngleCounts();
     TargetDistance = TargetDistanceExternal;
 #endif
-    Target_Iq = Target_Iq_External; // so can debug easier
+    // reset some global vars:
+    // Target_Iq = Target_Iq_External; // so can debug easier
+    // Target_Id = 0.0f;
+    // reset pid for Iq:
+    TargetRPM = TargetRPMExternal;
     // Target_Id = Target_Id_External;
     // Blue WS2812 means the FOC is running:
     WS2812_SETPURE(0, 0, 32);

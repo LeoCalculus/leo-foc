@@ -9,6 +9,9 @@
 
 extern volatile uint8_t SoftStopRequested;
 extern volatile float Target_Iq;
+extern volatile float Target_Id;
+extern volatile float RPMFiltered;
+extern volatile float RPMHook;
 
 void Velocity_Step(const float dt); // inside FOC step but using 4KHz
 

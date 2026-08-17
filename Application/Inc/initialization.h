@@ -17,6 +17,7 @@ extern volatile float AngleCosSum;
 extern volatile uint32_t DirectionPositiveCounter;
 extern volatile uint32_t DirectionNegativeCounter;
 extern volatile float EncoderDirection;
+extern volatile uint8_t DoRotateElectricAngle; // do some rotation to overcome friction
 
 void Init();
 

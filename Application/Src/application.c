@@ -26,6 +26,7 @@ float ClarkCurrent[2] = {0.0f}; // Ia and Ib
 float ClarkV[2] = {0.0f};
 float ParkCurrent[2] = {0.0f}; // Id and Iq
 float UVWCurrent[3] = {0.0f}; // order is UVW
+float UVWCurrentNow[3] = {0.0f};
 float UVWVOut[3] = {0.0f};
 volatile float Theta_e = 0.0f;
 volatile uint8_t VelocityLoopDivision = 0;
@@ -54,30 +55,50 @@ volatile float AccumulatedMechanicalAngle = 0.0f;
 
 // Internal signals for FOC
 volatile float Target_Iq = 0.0f;
-static volatile float Target_Id = 0.0f;
+volatile float Target_Id = 0.0f;
 
 // tune here for current loop - in the end of Init will apply the step response
 volatile float Target_Id_External = 0.0f;
-volatile float Target_Iq_External = 0.3f; // 0.57 is good for application
-volatile float DisplayAlphaExternal = 0.001f;
+volatile float Target_Iq_External = 0.6f; // 0.6 is good for application
+volatile float DisplayAlphaExternal = 0.1f;
 volatile float TargetRPM = 0.0f;
-volatile float TargetRPMExternal = 1000.0f;
+volatile float TargetRPMExternal = 500.0f;
 volatile float VelocityErrorExternal = 0.0f;
 volatile float TargetDistance = 0.0f;
 volatile float TargetDistanceExternal = 0.314f;
 
+// monitor static value:
+static volatile float SumCurrentNow = 0.0f;
+static volatile float SumCurrentHold = 0.0f;
+static volatile float IqNow, IqHold = 0.0f;
+static volatile float IdNow, IdHold = 0.0f;
+static volatile float DutyNow, DutyHold = 0.0f;
+static volatile uint8_t SumCount = 0;
+static volatile uint8_t CurrentSumCount = 0;
+static volatile uint8_t DutyCount = 0;
+static volatile float MechanicRadsFiltered = 0.0f;
+volatile float VoutInspect[2] = {0.0f};
+
+
 PID_t Id_pid = {
-    .P = 0.28f,
-    .I = 100.0f,
+    .P = 0.3f,
+    .I = 550.0f,
     .D = 0.0f,
-    .integral_max = 0.033f
+    .integral_max = 0.01f
+};
+
+PID_t Id_pid_Calib = {
+    .P = 1.0f,
+    .I = 80.0f,
+    .D = 0.0f,
+    .integral_max = 0.01f
 };
 
 PID_t Iq_pid = {
-    .P = 0.52f,
-    .I = 100.0f,
+    .P = 0.58f,
+    .I = 580.0f,
     .D = 0.0f,
-    .integral_max = 0.069f
+    .integral_max = 0.01f
 };
 
 // recall meaning Error = Kp * e + Ki * integral (usually max as time goes on)
@@ -104,9 +125,9 @@ void EmergencyStopMotor() {
 }
 
 void Application_Step(const float dt) {
-    // need filter for display, otherwise the wave in vofa is useless
     static float FilteredIq = 0.0f;
-    static float FilterRPM = 0.0f;
+    static float FilteredId = 0.0f;
+    static float RPMFilterResult = 0.0f;
     const float DisplayFilterAlpha = DisplayAlphaExternal;
 
     // reduce the target gradually instead of sudden stop
@@ -148,39 +169,16 @@ void Application_Step(const float dt) {
     }
 
     vofa.data[1] = BusVoltage;
-
-    float speed_rpm;
-    float speed_rpm_copy = 0.0f;
-    if (MT6835_GetVelocityRPM(&speed_rpm)) {
-        // speed_rpm is valid
-        speed_rpm_copy = speed_rpm;
-    }
-    FilterRPM += DisplayFilterAlpha * (speed_rpm_copy - FilterRPM);
-    vofa.data[2] = speed_rpm_copy;
-
-    vofa.data[3] = VelocityErrorExternal;
-    vofa.data[4] = FilterRPM;
-
-    MT6835_Reading_t encoder;
-    // update the struct
-    MT6835_GetLatestReading(&encoder);
-
-    vofa.data[5] = encoder.status;
-
-    float position_meters;
-    if (!MT6835_GetDistanceMeters(&position_meters)) {
-        return; // Or trigger encoder-fault handling
-    }
-
-    position_meters *= EncoderDirection;
-
-    vofa.data[6] = TargetDistance;
-    vofa.data[7] = position_meters;
-
-    // simple IIR low pass filter for display
-    FilteredIq += DisplayFilterAlpha * (ParkCurrent[1] - FilteredIq);
-    vofa.data[8] = Target_Iq;
-    vofa.data[9] = FilteredIq;
+    vofa.data[2] = Target_Iq;
+    FilteredIq += 0.01f * (ParkCurrent[1] - FilteredIq);
+    vofa.data[3] = FilteredIq;
+    FilteredId += 0.01f * (ParkCurrent[0] - FilteredId);
+    vofa.data[4] = FilteredId;
+    RPMFilterResult += 0.001f * (RPMHook - RPMFilterResult);
+    vofa.data[5] = RPMFilterResult;
+    vofa.data[6] = TargetRPM;
+    vofa.data[7] = ElectricalMechanicalOffset;
+    vofa.data[8] = VoutInspect[0];
 
     // update ws2812
     if (WS2812Update) {
@@ -217,11 +215,6 @@ void FOC_Step(const float dt) {
 #endif
         static float RotorAngle = 0.0f;
         // update dt at 20kHz still need angular velocity
-        AccumulatedTimeFoc += SPWM_ANGULAR_VELOCITY_PREFIX * Electric_Frequency * dt; // 2PI * f * t
-        // check if need wrap round:
-        if (AccumulatedTimeFoc > 2.0f*PI) {
-            AccumulatedTimeFoc -= 2.0f*PI;
-        }
 
         float BusVoltage = (float)BusVoltageCount * (3.3f/4096.0f) / 1000.0f * 16000.0f;
         if (BusVoltage < 21.0f || BusVoltage > 26.0f) { // stop immediately
@@ -234,9 +227,22 @@ void FOC_Step(const float dt) {
         // Channel 1 is U, sampling adc is ADC3
         // Channel 2 is V, sampling adc is ADC1
         // Channel 3 is W, sampling adc is ADC2
-        UVWCurrent[1] = -((float)SnapPhaseCurrent[0]-ADCOffset[0]) * ADCParameter;
-        UVWCurrent[2] = -((float)SnapPhaseCurrent[1]-ADCOffset[1]) * ADCParameter;
-        UVWCurrent[0] = -((float)SnapPhaseCurrent[2]-ADCOffset[2]) * ADCParameter;
+        UVWCurrentNow[1] = -((float)SnapPhaseCurrent[0]-ADCOffset[0]) * ADCParameter;
+        UVWCurrentNow[2] = -((float)SnapPhaseCurrent[1]-ADCOffset[1]) * ADCParameter;
+        UVWCurrentNow[0] = -((float)SnapPhaseCurrent[2]-ADCOffset[2]) * ADCParameter;
+
+
+        // filter each respectively, they each have same setting so do similar stuff
+        UVWCurrent[1] = CurrentIIRFilterAlpha * UVWCurrentNow[1] + (1.0f - CurrentIIRFilterAlpha) * UVWCurrent[1];
+        UVWCurrent[2] = CurrentIIRFilterAlpha * UVWCurrentNow[2] + (1.0f - CurrentIIRFilterAlpha) * UVWCurrent[2];
+        UVWCurrent[0] = CurrentIIRFilterAlpha * UVWCurrentNow[0] + (1.0f - CurrentIIRFilterAlpha) * UVWCurrent[0];
+
+        SumCurrentNow = UVWCurrentNow[0] + UVWCurrentNow[1] + UVWCurrentNow[2];
+        if (++SumCount >= 20) {
+            SumCurrentHold = SumCurrentNow / 20.0f;
+            SumCurrentNow = 0.0f; // reset
+            SumCount = 0;
+        }
 
         // clark transform
         ClarkTransform();
@@ -252,12 +258,35 @@ void FOC_Step(const float dt) {
         // do park transform:
         ParkTransform();
 
+        IdNow += ParkCurrent[0];
+        IqNow += ParkCurrent[1];
+        // hook to find averaged filter:
+        if (++CurrentSumCount >= 20) {
+            IdHold = IdNow / 20.0f;
+            IqHold = IqNow / 20.0f;
+            IqNow = 0.0f;
+            IdNow = 0.0f;
+            CurrentSumCount = 0;
+        }
+
         // do PID to get output voltage:
         float Error_Id = Target_Id - ParkCurrent[0];
         float Error_Iq = Target_Iq - ParkCurrent[1];
 
         float VOutById = pid_cycle(&Id_pid, Error_Id, dt);
         float VOutByIq = pid_cycle(&Iq_pid, Error_Iq, dt);
+
+        VoutInspect[0] = VOutByIq;
+
+        // MT6835_Velocity_t velocityEncoder;
+        // MT6835_GetLatestVelocity(&velocityEncoder);
+        // float MechanicalRads = velocityEncoder.radians_per_second; // current
+        //
+        // // speed also needs low pass filer since wrap around will create a lot of
+        // MechanicRadsFiltered = VelocityILoopFilterAlpha * MechanicalRads + (1.0f - VelocityILoopFilterAlpha) * MechanicRadsFiltered;
+        //
+        // float VdDecouple = -IdIqDecoupleGain * EncoderDirection * 7.0f * MechanicRadsFiltered * LqEstimate * 0.000001f * ParkCurrent[1];
+        // VOutById += VdDecouple;
 
         // do reverse Park
         ReverseParkTransform(VOutById, VOutByIq);
@@ -277,6 +306,15 @@ void FOC_Step(const float dt) {
         float MinDuty = (Channel1Duty < Channel2Duty) ? ((Channel1Duty < Channel3Duty) ? Channel1Duty : Channel3Duty) : ((Channel2Duty < Channel3Duty) ? Channel2Duty : Channel3Duty);
         float MidDuty = (MaxDuty + MinDuty)/2.0f;
         float Voffset = halfDuty - MidDuty;
+
+        DutyNow += MaxDuty;
+        // hook to get max duty:
+        if (++DutyCount >= 20) {
+
+            DutyHold = DutyNow / (20.0f * 4250.0f);
+            DutyNow = 0.0f;
+            DutyCount = 0;
+        }
 
         // N channel duty was complement setting so no need to set N channel again
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, clampf(Channel1Duty+Voffset, 4250, 0));
@@ -320,27 +358,111 @@ void FOC_Step(const float dt) {
         }
         // we can simply set the modulation with 0 accumulated phase: (no rotatio intended so theta_e = 0)
         // assume A axis is align with U axis.
-        const float CalibPhaseChannel1 = PI / 2.0f;
-        const float CalibPhaseChannel2 = PI / 2.0f + 2.0f * PI / 3.0f;
-        const float CalibPhaseChannel3 = PI / 2.0f - 2.0f * PI / 3.0f;
+        // const float CalibPhaseChannel1 = PI / 2.0f;
+        // const float CalibPhaseChannel2 = PI / 2.0f + 2.0f * PI / 3.0f;
+        // const float CalibPhaseChannel3 = PI / 2.0f - 2.0f * PI / 3.0f;
+        //
+        // float CalibModulation = 0.1f;
+        //
+        // float CalibHalfDuty = 2125.0f;
+        // float CalibChannel1Duty  = CalibHalfDuty*(1+CalibModulation * sinf(CalibPhaseChannel1));
+        // float CalibChannel2Duty  = CalibHalfDuty*(1+CalibModulation * sinf(CalibPhaseChannel2));
+        // float CalibChannel3Duty  = CalibHalfDuty*(1+CalibModulation * sinf(CalibPhaseChannel3));
 
-        float CalibModulation = 0.05f;
 
-        float CalibHalfDuty = 2125.0f;
-        float CalibChannel1Duty  = CalibHalfDuty*(1+CalibModulation * sinf(CalibPhaseChannel1));
-        float CalibChannel2Duty  = CalibHalfDuty*(1+CalibModulation * sinf(CalibPhaseChannel2));
-        float CalibChannel3Duty  = CalibHalfDuty*(1+CalibModulation * sinf(CalibPhaseChannel3));
+        AccumulatedTimeFoc += SPWM_ANGULAR_VELOCITY_PREFIX * Electric_Frequency * dt; // 2PI * f * t
+        // check if need wrap round:
+        if (AccumulatedTimeFoc > 2.0f*PI) {
+            AccumulatedTimeFoc -= 2.0f*PI;
+        }
+
+        float BusVoltage = (float)BusVoltageCount * (3.3f/4096.0f) / 1000.0f * 16000.0f;
+        // use current method, since id is align with a axis and U axis, so set target Id to force alignment:
+        // same get current first
+        UVWCurrentNow[1] = -((float)SnapPhaseCurrent[0]-ADCOffset[0]) * ADCParameter;
+        UVWCurrentNow[2] = -((float)SnapPhaseCurrent[1]-ADCOffset[1]) * ADCParameter;
+        UVWCurrentNow[0] = -((float)SnapPhaseCurrent[2]-ADCOffset[2]) * ADCParameter;
+
+
+        // filter each respectively, they each have same setting so do similar stuff
+        UVWCurrent[1] = CurrentIIRFilterAlpha * UVWCurrentNow[1] + (1.0f - CurrentIIRFilterAlpha) * UVWCurrent[1];
+        UVWCurrent[2] = CurrentIIRFilterAlpha * UVWCurrentNow[2] + (1.0f - CurrentIIRFilterAlpha) * UVWCurrent[2];
+        UVWCurrent[0] = CurrentIIRFilterAlpha * UVWCurrentNow[0] + (1.0f - CurrentIIRFilterAlpha) * UVWCurrent[0];
+
+        // clark transform
+        ClarkTransform();
+
+        Theta_e = 0.0f; // force this
+
+        // do park transform:
+        ParkTransform();
+
+        // also assume theta_e is 0
+        // current two value here are fixed
+        Target_Id = 1.0f;
+        Target_Iq = 0.0f;
+
+        // do PID to get output voltage:
+        float Error_Id = Target_Id - ParkCurrent[0];
+        float Error_Iq = Target_Iq - ParkCurrent[1];
+
+        float VOutById = pid_cycle(&Id_pid_Calib, Error_Id, dt);
+        float VOutByIq = pid_cycle(&Iq_pid, Error_Iq, dt);
+
+        // flag hook result:
+        if (DoRotateElectricAngle) {
+            AccumulatedTimeFoc += SPWM_ANGULAR_VELOCITY_PREFIX * Electric_Frequency * dt; // 2PI * f * t
+            // check if need wrap round:
+            if (AccumulatedTimeFoc > 2.0f*PI) {
+                AccumulatedTimeFoc -= 2.0f*PI;
+            }
+            float halfDutyCalib = 4250.0f*0.5f;
+
+            float PhaseChannel1Calib = AccumulatedTimeFoc - 0.0f;
+            float PhaseChannel2Calib = AccumulatedTimeFoc - 2.0f * PI / 3.0f;
+            float PhaseChannel3Calib = AccumulatedTimeFoc - (-2.0f * PI / 3.0f);
+
+            float Channel1DutyCalib  = halfDutyCalib*(1+0.05f* sinf(PhaseChannel1Calib));
+            float Channel2DutyCalib  = halfDutyCalib*(1+0.05f * sinf(PhaseChannel2Calib));
+            float Channel3DutyCalib  = halfDutyCalib*(1+0.05f * sinf(PhaseChannel3Calib));
+
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, Channel1DutyCalib);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Channel2DutyCalib);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, Channel3DutyCalib);
+            return;
+        }
+
+        ReverseParkTransform(VOutById, VOutByIq);
+
+        // do reverse Clark to get voltage information
+        ReverseClarkTransform();
+
+        // after getting voltage, remap back to Duty:
+
+        // Simplified, assume using exactly 24V -> power supply case
+        float Channel1Duty  = (BusVoltage/2.0f + UVWVOut[0]) / BusVoltage * 4250.0f;
+        float Channel2Duty  = (BusVoltage/2.0f + UVWVOut[1]) / BusVoltage * 4250.0f;
+        float Channel3Duty  = (BusVoltage/2.0f + UVWVOut[2]) / BusVoltage * 4250.0f;
+
+        // find max and min for SVPWM:
+        float MaxDuty = (Channel1Duty > Channel2Duty) ? ((Channel1Duty > Channel3Duty) ? Channel1Duty : Channel3Duty) : ((Channel2Duty > Channel3Duty) ? Channel2Duty : Channel3Duty);
+        float MinDuty = (Channel1Duty < Channel2Duty) ? ((Channel1Duty < Channel3Duty) ? Channel1Duty : Channel3Duty) : ((Channel2Duty < Channel3Duty) ? Channel2Duty : Channel3Duty);
+        float MidDuty = (MaxDuty + MinDuty)/2.0f;
+        float Voffset = halfDuty - MidDuty;
 
         // N channel duty was complement setting so no need to set N channel again
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, CalibChannel1Duty);
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, CalibChannel2Duty);
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, CalibChannel3Duty);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, clampf(Channel1Duty+Voffset, 4250, 0));
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, clampf(Channel2Duty+Voffset, 4250, 0));
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, clampf(Channel3Duty+Voffset, 4250, 0));
 
     }
 
     // find encoder direction need by loop
     if (FindEncoderDirectionFlag) {
         // check encoder with positive direction rotate magnetic field:
+        AccumulatedTimeFoc = 0.0f; // reset here since its static var
+        // help reset pid as well:
+        Iq_pid.integral = 0.0f;
         float CurrentMechanicalReading = 0.0f;
         MT6835_Reading_t encoder;
         if (MT6835_GetLatestReading(&encoder)) {
