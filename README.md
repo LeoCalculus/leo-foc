@@ -1,2 +1,3 @@
-# Nano FOC  
-Current Iq = 0.4A.
+# Nano FOC    
+Marginally usable FOC.  
+Motor: TYI 4006 Brushless motor (380kV)  
