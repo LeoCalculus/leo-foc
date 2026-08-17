@@ -4,6 +4,8 @@
 
 #include "../Inc/positionLoop.h"
 
+volatile float PosHook = 0.0f;
+
 PID_t Position_pid = {
     .P = 2000.0f,
     .I = 50.0f,
@@ -18,8 +20,12 @@ void Position_Step(const float dt) {
     }
 
     position_meters *= EncoderDirection;
+    PosHook = position_meters;
     TargetDistance = TargetDistanceExternal;
     float PositionError = TargetDistance - position_meters;
+    // if (PositionError < 0.01f) {
+    //     PositionError = 0.0f; //deadband
+    // }
     float OutputSpeed = pid_cycle(&Position_pid, PositionError, dt); // in terms of rpm
     TargetRPM = clampf(OutputSpeed, 3600.0f, -3600.0f);
 }

@@ -62,7 +62,7 @@ volatile float Target_Id_External = 0.0f;
 volatile float Target_Iq_External = 0.6f; // 0.6 is good for application
 volatile float DisplayAlphaExternal = 0.1f;
 volatile float TargetRPM = 0.0f;
-volatile float TargetRPMExternal = 500.0f;
+volatile float TargetRPMExternal = 0.0f;
 volatile float VelocityErrorExternal = 0.0f;
 volatile float TargetDistance = 0.0f;
 volatile float TargetDistanceExternal = 0.314f;
@@ -178,7 +178,9 @@ void Application_Step(const float dt) {
     vofa.data[5] = RPMFilterResult;
     vofa.data[6] = TargetRPM;
     vofa.data[7] = ElectricalMechanicalOffset;
-    vofa.data[8] = VoutInspect[0];
+
+    vofa.data[8] = TargetDistance;
+    vofa.data[9] = PosHook;
 
     // update ws2812
     if (WS2812Update) {

@@ -109,6 +109,24 @@ void ParsingCommand(uint8_t* cmd) {
             WS2812Color[2] = (uint8_t)strtol(b, &endptr, 10);
             WS2812Update = 1;
         }
+
+        if (strcmp(command, "D") == 0) {
+            if (NumberOfParameters(saveptr) != 1) {
+                return;
+            }
+
+            char *distanceText = strtok_r(NULL, ",", &saveptr);
+            char *endptr;
+
+            float distance = strtof(distanceText, &endptr);
+
+            if (endptr == distanceText || *endptr != '\0') {
+                return;
+            }
+            TargetDistanceExternal = distance;
+
+            return;
+        }
     }
 }
 

@@ -102,8 +102,9 @@ void Init() {
     // Target_Iq = Target_Iq_External; // so can debug easier
     // Target_Id = 0.0f;
     // reset pid for Iq:
-    TargetRPM = TargetRPMExternal;
+    // TargetRPM = TargetRPMExternal;
     // Target_Id = Target_Id_External;
+    TargetDistance = TargetDistanceExternal;
     // Blue WS2812 means the FOC is running:
     WS2812_SETPURE(0, 0, 32);
     WS2812_REFRESH();

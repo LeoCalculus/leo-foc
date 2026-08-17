@@ -26,7 +26,7 @@
 
 
 // USER defines
-//#define PostionLoop
+#define PostionLoop
 #define VelocityLoop
 #define PI 3.14159265358979323846f
 #define TWO_PI 6.28318530717958647692f

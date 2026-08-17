@@ -1,2 +1,5 @@
 build
 .codex
+cmake-build-debug
+.obsidian
+FOC.md

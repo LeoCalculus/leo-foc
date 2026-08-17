@@ -7,6 +7,8 @@
 
 #include <application.h>
 
+extern volatile float PosHook;
+
 void Position_Step(const float dt); // inside FOC loop ( Velocity Loop)
 
 #endif //LEO_FOC_POSITIONLOOP_H
